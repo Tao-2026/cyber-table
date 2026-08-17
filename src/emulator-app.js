@@ -7,12 +7,12 @@ export async function mountFirebaseApp(container, options = {}) {
   const config = options.config ?? localEmulatorConfig;
   const backendLabel = emulator ? "LOCAL EMULATOR" : "FIREBASE";
   let api, room, roomId, stopWatch, connection = navigator.onLine ? "connecting" : "offline";
-  const renderError = error => { connection = "error"; renderHome(error?.message || "Emulator unavailable"); };
+  const renderError = error => { connection = "error"; renderHome(error?.message || `${backendLabel} unavailable`); };
   const statusText = () => ({ connecting: `CONNECTING TO ${backendLabel}…`, synced: `SYNCED · ${backendLabel}`, offline: "OFFLINE · WAITING TO RECONNECT", error: `${backendLabel} UNAVAILABLE` })[connection];
 
   function shell(content) { container.innerHTML = `<section class="app-shell emulator-screen"><div class="connection" data-state="${connection}" role="status">${statusText()}</div>${content}</section>`; }
   function action(label, name, kind = "button") { return `<button class="${kind}" data-fb-action="${name}">${label}</button>`; }
-  function renderHome(message = "") { shell(`<div><p class="eyebrow">${backendLabel}</p><h1 class="brand">Cyber <span>Table</span></h1><p class="tagline">Two real anonymous identities · ${emulator ? "local services only" : "independent Spark project"}</p></div><div class="hero-art"><span>🤖 💗 🐼 ⭐ 🐰</span></div><div class="actions">${action(`CREATE ${emulator ? "EMULATOR " : ""}ROOM`, "create", "button button-primary")}${action("JOIN WITH CODE", "join", "button button-purple")}${action("BACK TO LOCAL MODE", "local", "button button-ghost")}</div><p class="note">${message}</p>`); }
+  function renderHome(message = "") { shell(`<div><p class="eyebrow">${backendLabel}</p><h1 class="brand">Cyber <span>Table</span></h1><p class="tagline">Two real anonymous identities · ${emulator ? "local services only" : "independent Spark project"}</p></div><div class="hero-art"><span>🤖 💗 🐼 ⭐ 🐰</span></div><div class="actions">${action(`CREATE ${emulator ? "EMULATOR " : ""}ROOM`, "create", "button button-primary")}${action("JOIN WITH CODE", "join", "button button-purple")}${action("COMPUTER PRACTICE", "local", "button button-ghost")}</div><p class="note">${message}</p>`); }
   function renderJoin() { shell(`<div><p class="eyebrow">${backendLabel}</p><h1>Join room</h1></div><label class="room-entry">ROOM CODE<input id="fb-code" maxlength="5" placeholder="TST42"></label>${action("JOIN ROOM", "join-submit", "button button-purple")}${action("BACK", "home", "button button-ghost")}<p class="note"></p>`); }
   function renderRoom() {
     if (!room) return;
@@ -31,7 +31,7 @@ export async function mountFirebaseApp(container, options = {}) {
     const target = event.target.closest("[data-fb-action]"); if (!target) return;
     try {
       const name = target.dataset.fbAction;
-      if (name === "local") location.href = location.pathname;
+      if (name === "local") location.href = `${location.pathname}?backend=local`;
       if (name === "home") { stopWatch?.(); room = null; roomId = null; renderHome(); }
       if (name === "join") renderJoin();
       if (name === "create") { target.disabled = true; await open(await api.create(generateRoomCode())); }
