@@ -6,6 +6,7 @@
   "scripts": {
     "test": "node --test",
     "test:rules": "firebase emulators:exec --project cyber-table-local --only firestore \"node --test tests/firestore.rules.test.js\"",
+    "test:emulator": "firebase emulators:exec --project cyber-table-local --only auth,firestore \"node --test tests/firebase-room-service.test.js\"",
     "serve": "node scripts/serve.js"
   },
   "devDependencies": {

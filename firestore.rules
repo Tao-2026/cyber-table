@@ -3,7 +3,7 @@ service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
     function room(roomId) { return get(/databases/$(database)/documents/rooms/$(roomId)); }
-    function isMember(roomId) { return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)); }
+    function isMember(roomId) { return signedIn() && room(roomId).data.memberIds.hasAny([request.auth.uid]); }
     function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
     function validServerTime(field) { return field == request.time; }
     function validRoomStatus(value) { return value in ['lobby', 'ready', 'playing', 'roundOver', 'rotating', 'partyOver', 'expired']; }
@@ -30,17 +30,28 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list: if false;
       allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings'])
+        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','usedEmojis'])
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.roomCode is string && request.resource.data.roomCode.size() == 5
         && request.resource.data.status == 'lobby'
+        && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.memberCount == 1
+        && request.resource.data.usedEmojis is list && request.resource.data.usedEmojis.size() == 1
         && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt)
         && request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time
         && request.resource.data.settings.maxPlayers is int && request.resource.data.settings.maxPlayers >= 2 && request.resource.data.settings.maxPlayers <= 8;
-      allow update: if isHost(roomId)
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','updatedAt','hostId'])
-        && validRoomStatus(request.resource.data.status)
-        && validServerTime(request.resource.data.updatedAt);
+      allow update: if (isHost(roomId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','updatedAt','hostId'])
+          && validRoomStatus(request.resource.data.status)
+          && validServerTime(request.resource.data.updatedAt))
+        || (signedIn() && resource.data.status in ['lobby','ready']
+          && !resource.data.memberIds.hasAny([request.auth.uid])
+          && resource.data.memberCount < resource.data.settings.maxPlayers
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds','memberCount','usedEmojis','updatedAt'])
+          && request.resource.data.memberIds == resource.data.memberIds.concat([request.auth.uid])
+          && request.resource.data.memberCount == resource.data.memberCount + 1
+          && request.resource.data.usedEmojis.size() == resource.data.usedEmojis.size() + 1
+          && request.resource.data.usedEmojis.toSet().size() == request.resource.data.usedEmojis.size()
+          && validServerTime(request.resource.data.updatedAt));
       allow delete: if false;
 
       match /players/{playerId} {
@@ -48,6 +59,9 @@ service cloud.firestore {
         allow create: if signedIn() && playerId == request.auth.uid
           && request.resource.data.keys().hasOnly(['playerId','emoji','seat','partyScore','joinedAt','lastSeenAt','status'])
           && request.resource.data.playerId == request.auth.uid
+          && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberIds.hasAny([request.auth.uid])
+          && request.resource.data.seat == getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount - 1
+          && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.usedEmojis.hasAny([request.resource.data.emoji])
           && request.resource.data.emoji is string && request.resource.data.emoji.size() <= 8
           && request.resource.data.seat is int && request.resource.data.seat >= 0 && request.resource.data.seat < 8
           && request.resource.data.partyScore == 0
@@ -75,7 +89,9 @@ service cloud.firestore {
           && validBoard(request.resource.data.board)
           && validMoveBoard(resource.data.board, request.resource.data.board, resource.data.currentTurn)
           && request.resource.data.moveCount == resource.data.moveCount + 1
-          && request.resource.data.currentTurn != resource.data.currentTurn
+          && (request.resource.data.status == 'playing'
+            ? request.resource.data.currentTurn != resource.data.currentTurn
+            : request.resource.data.currentTurn == resource.data.currentTurn)
           && validMark(request.resource.data.winner)
           && validServerTime(request.resource.data.updatedAt);
         allow delete: if false;

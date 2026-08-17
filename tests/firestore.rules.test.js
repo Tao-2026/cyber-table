@@ -16,7 +16,7 @@ after(async () => env.cleanup());
 async function seedRoom() {
   await env.withSecurityRulesDisabled(async context => {
     const db = context.firestore();
-    await setDoc(doc(db, "rooms/ROOM1"), { hostId: "host", roomCode: "ABCDE", status: "playing", currentMatchId: "M1", updatedAt: new Date() });
+    await setDoc(doc(db, "rooms/ROOM1"), { hostId: "host", roomCode: "ABCDE", status: "playing", currentMatchId: "M1", memberIds: ["host","guest","watcher"], memberCount: 3, usedEmojis: ["🤖","🐼","🐰"], settings: { maxPlayers: 8 }, updatedAt: new Date() });
     for (const [id, seat] of [["host",0],["guest",1],["watcher",2]]) await setDoc(doc(db, `rooms/ROOM1/players/${id}`), { playerId: id, emoji: "🤖", seat, partyScore: 0, status: "active" });
     await setDoc(doc(db, "rooms/ROOM1/matches/M1"), { gameType: "tic-tac-toe", playerX: "host", playerO: "guest", board: Array(9).fill(null), currentTurn: "X", status: "playing", winner: null, moveCount: 0, createdAt: new Date(), updatedAt: new Date() });
   });
