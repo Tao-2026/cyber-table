@@ -8,7 +8,7 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Added
 
-- Central application version metadata, an in-product update link, and read-only release checks.
+- Nothing yet.
 
 ### Changed
 
@@ -24,9 +24,9 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Known Issues
 
-- The beta release and its GitHub Release do not exist yet; the product links to this changelog until publication.
+- Nothing yet.
 
-## [0.4.0-beta.1] - Unreleased
+## [0.4.0-beta.1] - 2026-08-17
 
 ### Added
 
@@ -35,6 +35,7 @@ All notable changes to Cyber Table are documented here. The format follows
 - Local multi-tab rooms for early multiplayer prototyping.
 - Firebase Authentication and Firestore Emulator development foundation.
 - Anonymous Firebase rooms with synchronized cross-device boards on the independent Spark project.
+- Central application version metadata, localized in-product update links, and read-only release checks.
 
 ### Changed
 

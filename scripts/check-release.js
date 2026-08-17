@@ -23,7 +23,8 @@ try {
 try { git("check-ignore", "archives/release-probe.zip"); }
 catch { failures.push("archives/ is not ignored"); }
 if (!RELEASE_DATE) failures.push("RELEASE_DATE is not set");
-if (RELEASE_COMMIT !== head) failures.push("RELEASE_COMMIT does not match HEAD");
+try { git("merge-base", "--is-ancestor", RELEASE_COMMIT, head); }
+catch { failures.push("RELEASE_COMMIT is not an ancestor of HEAD"); }
 if (!RELEASE_URL.endsWith("/releases/tag/v" + APP_VERSION)) failures.push("Release URL does not match version");
 if (process.env.CYBER_TABLE_EMULATOR_TESTED_COMMIT !== head) failures.push("Emulator test evidence does not match HEAD");
 const changelog = readFileSync(new URL("../CHANGELOG.md", import.meta.url), "utf8");

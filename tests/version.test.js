@@ -19,16 +19,16 @@ test("English and Chinese version copy identify beta", () => {
   assert.equal(chinese.channel, "Beta");
 });
 
-test("unpublished release falls back to changelog", () => {
+test("published release links to its versioned GitHub Release", () => {
   const model = getVersionFooterModel("en");
-  assert.equal(model.isPublished, false);
-  assert.equal(model.href, "./CHANGELOG.md");
+  assert.equal(model.isPublished, true);
+  assert.equal(model.href, RELEASE_URL);
   assert.equal(RELEASE_URL, "https://github.com/Tao-2026/cyber-table/releases/tag/v" + APP_VERSION);
 });
 
 test("relative update link survives a future Cyber Arcade subdirectory", () => {
   const resolved = new URL(getVersionFooterModel("en").href, "https://example.test/cyber-arcade/table/");
-  assert.equal(resolved.pathname, "/cyber-arcade/table/CHANGELOG.md");
+  assert.equal(resolved.href, RELEASE_URL);
 });
 
 test("package and changelog contain the configured version", async () => {
