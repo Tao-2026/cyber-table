@@ -48,6 +48,8 @@ Open the same URL in a second browser session to receive a separate anonymous UI
 
 Run the integration and rules suites with `pnpm test:emulator` and `pnpm test:rules`.
 
+The production Firebase backend is only selected explicitly with `?backend=firebase`. The default URL remains local mode, which prevents accidental cloud writes during ordinary development.
+
 ## Project boundaries
 
 Cyber Table has its own Git history, GitHub repository, and future Firebase project. It does not depend on or modify CyberSnake. See [`docs/ARCHITECTURE_PROPOSAL.md`](docs/ARCHITECTURE_PROPOSAL.md) for the confirmed architecture, state machine, security boundaries, and future `git subtree` migration plan.

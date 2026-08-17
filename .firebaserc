@@ -1,5 +1,6 @@
 {
   "projects": {
-    "default": "cyber-table-local"
+    "default": "cyber-table-local",
+    "production": "cyber-table-tao-2026"
   }
 }

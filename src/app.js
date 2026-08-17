@@ -107,7 +107,11 @@ app.addEventListener("click", (event) => {
   }
 });
 
-if (new URLSearchParams(location.search).get("backend") === "emulator") {
-  const { mountEmulatorApp } = await import("./emulator-app.js");
-  await mountEmulatorApp(app);
+const backend = new URLSearchParams(location.search).get("backend");
+if (backend === "emulator" || backend === "firebase") {
+  const { mountFirebaseApp } = await import("./emulator-app.js");
+  const options = backend === "emulator"
+    ? { emulator: true }
+    : { emulator: false, config: (await import("./config/firebase-config.js")).firebaseConfig };
+  await mountFirebaseApp(app, options);
 } else renderHome();

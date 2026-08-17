@@ -2,6 +2,8 @@
 
 Cyber Table must use its own Firebase project. Do not reuse CyberSnake credentials or project IDs.
 
+Production project: `cyber-table-tao-2026` (Spark). The default CLI alias intentionally remains `cyber-table-local`; production operations must explicitly pass `--project production` to reduce accidental deployment risk.
+
 ## Local Emulator only
 
 1. Install a supported Java runtime and Firebase CLI.
