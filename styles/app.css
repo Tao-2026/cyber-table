@@ -45,6 +45,17 @@ button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--cyb
 .cell.winner { background: rgba(255,217,106,.17); outline: 4px solid var(--cyber-yellow); }
 .game-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .status { min-height: 28px; margin: 0; text-align: center; font-weight: 800; }
+.room-entry { display: grid; gap: 8px; color: var(--cyber-cyan); font-weight: 900; letter-spacing: .08em; }
+.room-entry input { min-height: 58px; border: 2px solid var(--cyber-border); border-radius: 16px; padding: 10px 16px; background: #f7f3ec; color: #14244c; font-size: 1.8rem; font-weight: 900; text-transform: uppercase; }
+.room-code-card { display: grid; gap: 4px; padding: 16px; border-radius: var(--cyber-radius); background: var(--cyber-purple); color: #14244c; text-align: center; box-shadow: var(--cyber-shadow); }
+.room-code-card strong { font-size: 2.6rem; letter-spacing: .12em; }
+.player-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+.player-list .player span { display: block; font-size: 2.3rem; }
+.player-list small, .podium-place small { display: block; color: var(--cyber-yellow); font-weight: 900; }
+.podium { display: grid; grid-template-columns: repeat(3, 1fr); align-items: end; gap: 8px; }
+.podium-place { display: grid; place-items: center; gap: 6px; min-height: 150px; padding: 16px 8px; border: 2px solid var(--cyber-border); border-radius: 22px 22px 8px 8px; background: var(--cyber-panel-strong); box-shadow: var(--cyber-shadow); }
+.podium-place:nth-child(1) { min-height: 210px; background: #675a28; }
+.podium-place span { font-size: 3rem; }
 @media (min-width: 760px) and (orientation: landscape) {
   .app-shell.practice { width: min(100%, 980px); grid-template-columns: minmax(280px, .8fr) minmax(360px, 1fr); align-items: center; }
   .practice .topbar, .practice .game-header, .practice .matchup, .practice .turn-banner, .practice .status, .practice .game-actions { grid-column: 1; }

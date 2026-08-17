@@ -6,12 +6,13 @@ A family-friendly cyberpunk party game for phones, tablets, and desktop browsers
 
 - Native HTML, CSS, and JavaScript with ES Modules
 - Offline single-player practice against a simple computer
+- Local multi-tab room prototype with 2–8 emoji players, play/spectate roles, rotation, scoring, and podium
 - English by default with Chinese switching
 - Mobile portrait and tablet landscape layouts
 - Pure Tic-Tac-Toe rules with Node tests
 - Relative paths and modular boundaries for a future Cyber Arcade monorepo
 
-Online rooms and Firebase are not connected yet.
+The room prototype uses `localStorage` and `BroadcastChannel` so multiple tabs on the same browser can simulate devices. It is not an internet multiplayer backend. Online rooms and Firebase are not connected yet.
 
 ## Run locally
 
