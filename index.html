@@ -10,10 +10,20 @@
     <script type="importmap">
       {"imports":{"firebase/app":"https://www.gstatic.com/firebasejs/12.17.0/firebase-app.js","firebase/auth":"https://www.gstatic.com/firebasejs/12.17.0/firebase-auth.js","firebase/firestore":"https://www.gstatic.com/firebasejs/12.17.0/firebase-firestore.js"}}
     </script>
+    <script>
+      // Select the cloud backend before any cached application entry point can
+      // run. Explicit backend choices and local development remain unchanged.
+      const localHosts = new Set(["localhost", "127.0.0.1", "[::1]"]);
+      const params = new URLSearchParams(location.search);
+      if (!localHosts.has(location.hostname) && !params.has("backend")) {
+        params.set("backend", "firebase");
+        history.replaceState(null, "", `${location.pathname}?${params}${location.hash}`);
+      }
+    </script>
   </head>
   <body>
     <a class="skip-link" href="#app">Skip to game</a>
     <main id="app"></main>
-    <script type="module" src="./src/app.js"></script>
+    <script type="module" src="./src/app.js?v=public-firebase-20260817"></script>
   </body>
 </html>
