@@ -1,0 +1,96 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() { return request.auth != null; }
+    function room(roomId) { return get(/databases/$(database)/documents/rooms/$(roomId)); }
+    function isMember(roomId) { return signedIn() && exists(/databases/$(database)/documents/rooms/$(roomId)/players/$(request.auth.uid)); }
+    function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
+    function validServerTime(field) { return field == request.time; }
+    function validRoomStatus(value) { return value in ['lobby', 'ready', 'playing', 'roundOver', 'rotating', 'partyOver', 'expired']; }
+    function validMark(value) { return value == null || value in ['X', 'O']; }
+    function validBoard(board) { return board is list && board.size() == 9 && board.toSet().hasOnly([null, 'X', 'O']); }
+    function changedBoardCells(before, after) {
+      return (before[0] != after[0] ? 1 : 0) + (before[1] != after[1] ? 1 : 0) +
+        (before[2] != after[2] ? 1 : 0) + (before[3] != after[3] ? 1 : 0) +
+        (before[4] != after[4] ? 1 : 0) + (before[5] != after[5] ? 1 : 0) +
+        (before[6] != after[6] ? 1 : 0) + (before[7] != after[7] ? 1 : 0) +
+        (before[8] != after[8] ? 1 : 0);
+    }
+    function validCellChange(before, after, turn) { return before == after || (before == null && after == turn); }
+    function validMoveBoard(before, after, turn) {
+      return changedBoardCells(before, after) == 1
+        && validCellChange(before[0], after[0], turn) && validCellChange(before[1], after[1], turn)
+        && validCellChange(before[2], after[2], turn) && validCellChange(before[3], after[3], turn)
+        && validCellChange(before[4], after[4], turn) && validCellChange(before[5], after[5], turn)
+        && validCellChange(before[6], after[6], turn) && validCellChange(before[7], after[7], turn)
+        && validCellChange(before[8], after[8], turn);
+    }
+
+    match /rooms/{roomId} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings'])
+        && request.resource.data.hostId == request.auth.uid
+        && request.resource.data.roomCode is string && request.resource.data.roomCode.size() == 5
+        && request.resource.data.status == 'lobby'
+        && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt)
+        && request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time
+        && request.resource.data.settings.maxPlayers is int && request.resource.data.settings.maxPlayers >= 2 && request.resource.data.settings.maxPlayers <= 8;
+      allow update: if isHost(roomId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','updatedAt','hostId'])
+        && validRoomStatus(request.resource.data.status)
+        && validServerTime(request.resource.data.updatedAt);
+      allow delete: if false;
+
+      match /players/{playerId} {
+        allow read: if isMember(roomId);
+        allow create: if signedIn() && playerId == request.auth.uid
+          && request.resource.data.keys().hasOnly(['playerId','emoji','seat','partyScore','joinedAt','lastSeenAt','status'])
+          && request.resource.data.playerId == request.auth.uid
+          && request.resource.data.emoji is string && request.resource.data.emoji.size() <= 8
+          && request.resource.data.seat is int && request.resource.data.seat >= 0 && request.resource.data.seat < 8
+          && request.resource.data.partyScore == 0
+          && validServerTime(request.resource.data.joinedAt) && validServerTime(request.resource.data.lastSeenAt)
+          && request.resource.data.status in ['active','away'];
+        allow update: if signedIn() && playerId == request.auth.uid
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeenAt','status'])
+          && validServerTime(request.resource.data.lastSeenAt)
+          && request.resource.data.status in ['active','away'];
+        allow delete: if false;
+      }
+
+      match /matches/{matchId} {
+        allow read: if isMember(roomId);
+        allow create: if isHost(roomId)
+          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','moveCount','createdAt','updatedAt'])
+          && request.resource.data.gameType == 'tic-tac-toe' && validBoard(request.resource.data.board)
+          && request.resource.data.moveCount == 0 && request.resource.data.currentTurn == 'X'
+          && request.resource.data.status == 'playing' && request.resource.data.winner == null
+          && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt);
+        allow update: if isMember(roomId)
+          && resource.data.status == 'playing'
+          && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','moveCount','updatedAt'])
+          && validBoard(request.resource.data.board)
+          && validMoveBoard(resource.data.board, request.resource.data.board, resource.data.currentTurn)
+          && request.resource.data.moveCount == resource.data.moveCount + 1
+          && request.resource.data.currentTurn != resource.data.currentTurn
+          && validMark(request.resource.data.winner)
+          && validServerTime(request.resource.data.updatedAt);
+        allow delete: if false;
+      }
+    }
+
+    match /roomCodes/{roomCode} {
+      allow get: if signedIn();
+      allow list: if false;
+      allow create: if signedIn() && roomCode.size() == 5
+        && request.resource.data.keys().hasOnly(['roomId','expiresAt'])
+        && request.resource.data.roomId is string && request.resource.data.expiresAt > request.time;
+      allow update, delete: if false;
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

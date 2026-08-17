@@ -5,6 +5,12 @@
   "type": "module",
   "scripts": {
     "test": "node --test",
+    "test:rules": "firebase emulators:exec --project cyber-table-local --only firestore \"node --test tests/firestore.rules.test.js\"",
     "serve": "node scripts/serve.js"
+  },
+  "devDependencies": {
+    "@firebase/rules-unit-testing": "^5.0.1",
+    "firebase": "^12.17.1",
+    "firebase-tools": "^15.27.0"
   }
 }
