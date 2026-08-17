@@ -1,0 +1,21 @@
+.version-info {
+  width: min(100%, 560px);
+  margin: -46px auto 0;
+  padding: 0 20px max(18px, env(safe-area-inset-bottom));
+  color: var(--cyber-muted);
+  text-align: center;
+  font-size: .78rem;
+  line-height: 1.5;
+}
+.version-info a {
+  color: var(--cyber-cyan);
+  text-underline-offset: .2em;
+}
+.version-info a:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--cyber-yellow);
+  outline-offset: 4px;
+}
+@media (min-width: 760px) {
+  .version-info { width: min(100%, 980px); }
+}
