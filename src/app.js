@@ -38,7 +38,7 @@ function renderHome(message = "") {
 }
 
 function renderJoin() {
-  app.innerHTML = `<section class="app-shell"><div class="topbar">${button("←", "home", "button button-ghost")}${languageButton()}</div><div><p class="eyebrow">Local room prototype</p><h1>Join a room</h1><p class="tagline">Open this page in another tab and enter the same code.</p></div><label class="room-entry">ROOM CODE<input id="room-code" maxlength="5" autocomplete="off" inputmode="text" placeholder="7K2H9"></label>${button("JOIN ROOM", "join-submit", "button button-purple")}<p class="note" role="status"></p></section>`;
+  app.innerHTML = `<section class="app-shell"><div class="topbar">${button("←", "home", "button button-ghost")}${languageButton()}</div><div><p class="eyebrow">Offline room · same browser only</p><h1>Join a room</h1><p class="tagline">This fallback is only available when local mode is explicitly selected.</p></div><label class="room-entry">ROOM CODE<input id="room-code" maxlength="5" autocomplete="off" inputmode="text" placeholder="7K2H9"></label>${button("JOIN ROOM", "join-submit", "button button-purple")}<p class="note" role="status"></p></section>`;
 }
 
 function openRoom(nextRoom) { room = nextRoom; saveRoom(room); stopWatching?.(); stopWatching = watchRoom(room.code, updated => { if (updated) { room = updated; renderRoom(); } }); renderRoom(); }

@@ -12,7 +12,7 @@ A family-friendly cyberpunk party game for phones, tablets, and desktop browsers
 - Pure Tic-Tac-Toe rules with Node tests
 - Relative paths and modular boundaries for a future Cyber Arcade monorepo
 
-The published GitHub Pages site uses the independent production Firebase project by default. Local development continues to use the offline prototype unless a backend is explicitly selected.
+The published GitHub Pages site selects the independent production Firebase project in the HTML bootstrap before the application loads. Its versioned entry script prevents an older local-room bundle from being reused after a release. Local development continues to use the offline prototype unless a backend is explicitly selected.
 
 ## Run locally
 
