@@ -1,18 +1,22 @@
 # Cyber Table / 赛博桌游
 
-A family-friendly cyberpunk party game for phones, tablets, and desktop browsers. The first game is Tic-Tac-Toe, with an offline practice mode and a planned 2–8 player online room experience.
+A family-friendly cyberpunk party game for phones, tablets, and desktop browsers. The first game is Tic-Tac-Toe, with offline practice and Firebase-backed 2–8 player rooms.
 
 ## Current prototype
 
 - Native HTML, CSS, and JavaScript with ES Modules
 - Offline single-player practice against a simple computer
 - Firebase-backed multiplayer rooms with anonymous players and real-time turns
+- Transactional round settlement: win +3, draw +1 each, idempotent scoring
+- Host-only next match and party end controls with real-time rotation and podium
 - English by default with Chinese switching
 - Mobile portrait and tablet landscape layouts
 - Pure Tic-Tac-Toe rules with Node tests
 - Relative paths and modular boundaries for a future Cyber Arcade monorepo
 
 The published GitHub Pages site selects the independent production Firebase project in the HTML bootstrap before the application loads. Its versioned entry script prevents an older local-room bundle from being reused after a release. Local development continues to use the offline prototype unless a backend is explicitly selected.
+
+The online lifecycle is `lobby → playing → roundOver → playing/partyOver`. Match creation, final scoring, rotation, and party end are transaction-protected and validated by Firestore Security Rules.
 
 ## Run locally
 
