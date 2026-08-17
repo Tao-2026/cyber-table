@@ -107,7 +107,11 @@ app.addEventListener("click", (event) => {
   }
 });
 
-const backend = new URLSearchParams(location.search).get("backend");
+const { selectBackend } = await import("./config/backend-selection.js");
+const backend = selectBackend({
+  requested: new URLSearchParams(location.search).get("backend"),
+  hostname: location.hostname
+});
 if (backend === "emulator" || backend === "firebase") {
   const { mountFirebaseApp } = await import("./emulator-app.js");
   const options = backend === "emulator"

@@ -6,13 +6,13 @@ A family-friendly cyberpunk party game for phones, tablets, and desktop browsers
 
 - Native HTML, CSS, and JavaScript with ES Modules
 - Offline single-player practice against a simple computer
-- Local multi-tab room prototype with 2–8 emoji players, play/spectate roles, rotation, scoring, and podium
+- Firebase-backed multiplayer rooms with anonymous players and real-time turns
 - English by default with Chinese switching
 - Mobile portrait and tablet landscape layouts
 - Pure Tic-Tac-Toe rules with Node tests
 - Relative paths and modular boundaries for a future Cyber Arcade monorepo
 
-The room prototype uses `localStorage` and `BroadcastChannel` so multiple tabs on the same browser can simulate devices. It is not an internet multiplayer backend. Online rooms and Firebase are not connected yet.
+The published GitHub Pages site uses the independent production Firebase project by default. Local development continues to use the offline prototype unless a backend is explicitly selected.
 
 ## Run locally
 
@@ -48,7 +48,7 @@ Open the same URL in a second browser session to receive a separate anonymous UI
 
 Run the integration and rules suites with `pnpm test:emulator` and `pnpm test:rules`.
 
-The production Firebase backend is only selected explicitly with `?backend=firebase`. The default URL remains local mode, which prevents accidental cloud writes during ordinary development.
+The production Firebase backend can be selected explicitly with `?backend=firebase`. Any public host selects it automatically; `localhost` and `127.0.0.1` remain local by default. Use `?backend=local` explicitly for offline computer practice on a public deployment.
 
 ## Project boundaries
 
