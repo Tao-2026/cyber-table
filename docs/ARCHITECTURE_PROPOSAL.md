@@ -1,6 +1,6 @@
 # Cyber Table v1 架构提案（确认前草案）
 
-状态：视觉方向已更新并确认采用“家庭友好 Cyberpunk”，第 10 节产品决策已确认；增加简单电脑单人练习。当前阶段仅制作本地原型，不创建或部署 Firebase 项目，不创建 GitHub 远程仓库，不合并 `main`。
+状态：视觉方向采用“家庭友好 Cyberpunk”；独立 Spark Firebase 项目与 GitHub 仓库已建立。正式多人生命周期使用事务化终局结算、轮换与 Podium；任何新功能仍通过独立分支和 Draft PR 验证后发布。
 
 视觉基准保存在 `docs/design/family-friendly-cyberpunk-reference.png`：深蓝夜空背景，柔和天蓝、薰衣草紫、薄荷绿、珊瑚粉和暖黄色；圆润厚实的卡片与大按钮；可爱机器人、熊猫、兔子等身份；轻微星星装饰。保留 Cyberpunk 的数字街机感，但避免刺眼霓虹、尖锐造型、强故障效果和压迫性的竞技表达。
 

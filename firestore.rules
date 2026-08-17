@@ -2,19 +2,30 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
     function signedIn() { return request.auth != null; }
-    function room(roomId) { return get(/databases/$(database)/documents/rooms/$(roomId)); }
+    function roomPath(roomId) { return /databases/$(database)/documents/rooms/$(roomId); }
+    function matchPath(roomId, matchId) { return /databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId); }
+    function playerPath(roomId, playerId) { return /databases/$(database)/documents/rooms/$(roomId)/players/$(playerId); }
+    function room(roomId) { return get(roomPath(roomId)); }
     function isMember(roomId) { return signedIn() && room(roomId).data.memberIds.hasAny([request.auth.uid]); }
     function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
     function validServerTime(field) { return field == request.time; }
-    function validRoomStatus(value) { return value in ['lobby', 'ready', 'playing', 'roundOver', 'rotating', 'partyOver', 'expired']; }
-    function validMark(value) { return value == null || value in ['X', 'O']; }
     function validBoard(board) { return board is list && board.size() == 9 && board.toSet().hasOnly([null, 'X', 'O']); }
+    function hasLine(board, mark) {
+      return (board[0] == mark && board[1] == mark && board[2] == mark)
+        || (board[3] == mark && board[4] == mark && board[5] == mark)
+        || (board[6] == mark && board[7] == mark && board[8] == mark)
+        || (board[0] == mark && board[3] == mark && board[6] == mark)
+        || (board[1] == mark && board[4] == mark && board[7] == mark)
+        || (board[2] == mark && board[5] == mark && board[8] == mark)
+        || (board[0] == mark && board[4] == mark && board[8] == mark)
+        || (board[2] == mark && board[4] == mark && board[6] == mark);
+    }
     function changedBoardCells(before, after) {
-      return (before[0] != after[0] ? 1 : 0) + (before[1] != after[1] ? 1 : 0) +
-        (before[2] != after[2] ? 1 : 0) + (before[3] != after[3] ? 1 : 0) +
-        (before[4] != after[4] ? 1 : 0) + (before[5] != after[5] ? 1 : 0) +
-        (before[6] != after[6] ? 1 : 0) + (before[7] != after[7] ? 1 : 0) +
-        (before[8] != after[8] ? 1 : 0);
+      return (before[0] != after[0] ? 1 : 0) + (before[1] != after[1] ? 1 : 0)
+        + (before[2] != after[2] ? 1 : 0) + (before[3] != after[3] ? 1 : 0)
+        + (before[4] != after[4] ? 1 : 0) + (before[5] != after[5] ? 1 : 0)
+        + (before[6] != after[6] ? 1 : 0) + (before[7] != after[7] ? 1 : 0)
+        + (before[8] != after[8] ? 1 : 0);
     }
     function validCellChange(before, after, turn) { return before == after || (before == null && after == turn); }
     function validMoveBoard(before, after, turn) {
@@ -25,25 +36,64 @@ service cloud.firestore {
         && validCellChange(before[6], after[6], turn) && validCellChange(before[7], after[7], turn)
         && validCellChange(before[8], after[8], turn);
     }
+    function validResult(after) {
+      return (after.status == 'playing' && after.winner == null && after.winningLine.size() == 0 && after.moveCount < 9)
+        || (after.status == 'won' && after.winner in ['X', 'O']
+          && after.winningLine is list && after.winningLine.size() == 3 && hasLine(after.board, after.winner))
+        || (after.status == 'draw' && after.winner == null && after.winningLine.size() == 0
+          && after.moveCount == 9 && !hasLine(after.board, 'X') && !hasLine(after.board, 'O'));
+    }
+    function scoreDelta(roomId, playerId, beforeMatch, afterMatch) {
+      let beforeScore = get(playerPath(roomId, playerId)).data.partyScore;
+      let afterScore = getAfter(playerPath(roomId, playerId)).data.partyScore;
+      let mark = playerId == beforeMatch.playerX ? 'X' : 'O';
+      let expected = afterMatch.status == 'draw' ? 1 : afterMatch.winner == mark ? 3 : 0;
+      return afterScore == beforeScore + expected;
+    }
+    function validScoreSettlement(roomId, beforeMatch, afterMatch) {
+      return scoreDelta(roomId, beforeMatch.playerX, beforeMatch, afterMatch)
+        && scoreDelta(roomId, beforeMatch.playerO, beforeMatch, afterMatch);
+    }
 
     match /rooms/{roomId} {
       allow get: if signedIn();
-      allow list: if false;
+      allow list, delete: if false;
       allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','usedEmojis'])
+        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','roundNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','usedEmojis'])
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.roomCode is string && request.resource.data.roomCode.size() == 5
-        && request.resource.data.status == 'lobby'
+        && request.resource.data.status == 'lobby' && request.resource.data.currentMatchId == null && request.resource.data.roundNumber == -1
         && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.memberCount == 1
         && request.resource.data.usedEmojis is list && request.resource.data.usedEmojis.size() == 1
         && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt)
         && request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time
         && request.resource.data.settings.maxPlayers is int && request.resource.data.settings.maxPlayers >= 2 && request.resource.data.settings.maxPlayers <= 8;
-      allow update: if (isHost(roomId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','updatedAt','hostId'])
-          && validRoomStatus(request.resource.data.status)
-          && validServerTime(request.resource.data.updatedAt))
-        || (signedIn() && resource.data.status in ['lobby','ready']
+      allow update: if (
+          signedIn() && resource.data.status == 'playing' && resource.data.currentMatchId != null
+          && request.auth.uid == (get(matchPath(roomId, resource.data.currentMatchId)).data.currentTurn == 'X'
+            ? get(matchPath(roomId, resource.data.currentMatchId)).data.playerX
+            : get(matchPath(roomId, resource.data.currentMatchId)).data.playerO)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
+          && request.resource.data.status == 'roundOver'
+          && getAfter(matchPath(roomId, resource.data.currentMatchId)).data.status in ['won','draw']
+          && getAfter(matchPath(roomId, resource.data.currentMatchId)).data.scoreApplied == true
+          && validServerTime(request.resource.data.updatedAt)
+        ) || (
+          isHost(roomId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','roundNumber','updatedAt'])
+          && validServerTime(request.resource.data.updatedAt)
+          && (
+            (resource.data.status == 'lobby' && request.resource.data.status == 'playing'
+              && request.resource.data.roundNumber == 0 && request.resource.data.currentMatchId != null)
+            || (resource.data.status == 'roundOver' && request.resource.data.status == 'playing'
+              && request.resource.data.roundNumber == resource.data.roundNumber + 1
+              && request.resource.data.currentMatchId != resource.data.currentMatchId)
+            || (resource.data.status == 'roundOver' && request.resource.data.status == 'partyOver'
+              && request.resource.data.roundNumber == resource.data.roundNumber
+              && request.resource.data.currentMatchId == resource.data.currentMatchId)
+          )
+        ) || (
+          signedIn() && resource.data.status == 'lobby'
           && !resource.data.memberIds.hasAny([request.auth.uid])
           && resource.data.memberCount < resource.data.settings.maxPlayers
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds','memberCount','usedEmojis','updatedAt'])
@@ -51,48 +101,69 @@ service cloud.firestore {
           && request.resource.data.memberCount == resource.data.memberCount + 1
           && request.resource.data.usedEmojis.size() == resource.data.usedEmojis.size() + 1
           && request.resource.data.usedEmojis.toSet().size() == request.resource.data.usedEmojis.size()
-          && validServerTime(request.resource.data.updatedAt));
-      allow delete: if false;
+          && validServerTime(request.resource.data.updatedAt)
+        );
 
       match /players/{playerId} {
         allow read: if isMember(roomId);
         allow create: if signedIn() && playerId == request.auth.uid
           && request.resource.data.keys().hasOnly(['playerId','emoji','seat','partyScore','joinedAt','lastSeenAt','status'])
           && request.resource.data.playerId == request.auth.uid
-          && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberIds.hasAny([request.auth.uid])
-          && request.resource.data.seat == getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.memberCount - 1
-          && getAfter(/databases/$(database)/documents/rooms/$(roomId)).data.usedEmojis.hasAny([request.resource.data.emoji])
+          && getAfter(roomPath(roomId)).data.memberIds.hasAny([request.auth.uid])
+          && request.resource.data.seat == getAfter(roomPath(roomId)).data.memberCount - 1
+          && getAfter(roomPath(roomId)).data.usedEmojis.hasAny([request.resource.data.emoji])
           && request.resource.data.emoji is string && request.resource.data.emoji.size() <= 8
           && request.resource.data.seat is int && request.resource.data.seat >= 0 && request.resource.data.seat < 8
           && request.resource.data.partyScore == 0
           && validServerTime(request.resource.data.joinedAt) && validServerTime(request.resource.data.lastSeenAt)
           && request.resource.data.status in ['active','away'];
-        allow update: if signedIn() && playerId == request.auth.uid
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeenAt','status'])
-          && validServerTime(request.resource.data.lastSeenAt)
-          && request.resource.data.status in ['active','away'];
+        allow update: if (
+            signedIn() && playerId == request.auth.uid
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeenAt','status'])
+            && validServerTime(request.resource.data.lastSeenAt)
+            && request.resource.data.status in ['active','away']
+          ) || (
+            isMember(roomId)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partyScore'])
+            && room(roomId).data.status == 'playing'
+            && room(roomId).data.currentMatchId != null
+            && get(matchPath(roomId, room(roomId).data.currentMatchId)).data.scoreApplied == false
+            && getAfter(matchPath(roomId, room(roomId).data.currentMatchId)).data.scoreApplied == true
+            && (playerId == get(matchPath(roomId, room(roomId).data.currentMatchId)).data.playerX
+              || playerId == get(matchPath(roomId, room(roomId).data.currentMatchId)).data.playerO)
+          );
         allow delete: if false;
       }
 
       match /matches/{matchId} {
         allow read: if isMember(roomId);
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','moveCount','createdAt','updatedAt'])
+          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','createdAt','updatedAt'])
           && request.resource.data.gameType == 'tic-tac-toe' && validBoard(request.resource.data.board)
+          && request.resource.data.playerX != request.resource.data.playerO
+          && room(roomId).data.memberIds.hasAny([request.resource.data.playerX])
+          && room(roomId).data.memberIds.hasAny([request.resource.data.playerO])
           && request.resource.data.moveCount == 0 && request.resource.data.currentTurn == 'X'
           && request.resource.data.status == 'playing' && request.resource.data.winner == null
+          && request.resource.data.winningLine.size() == 0 && request.resource.data.scoreApplied == false
+          && getAfter(roomPath(roomId)).data.currentMatchId == matchId
+          && getAfter(roomPath(roomId)).data.status == 'playing'
+          && getAfter(roomPath(roomId)).data.roundNumber == request.resource.data.roundNumber
           && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt);
         allow update: if isMember(roomId)
-          && resource.data.status == 'playing'
+          && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+          && resource.data.status == 'playing' && resource.data.scoreApplied == false
           && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','moveCount','updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','updatedAt'])
           && validBoard(request.resource.data.board)
           && validMoveBoard(resource.data.board, request.resource.data.board, resource.data.currentTurn)
           && request.resource.data.moveCount == resource.data.moveCount + 1
+          && validResult(request.resource.data)
           && (request.resource.data.status == 'playing'
-            ? request.resource.data.currentTurn != resource.data.currentTurn
-            : request.resource.data.currentTurn == resource.data.currentTurn)
-          && validMark(request.resource.data.winner)
+            ? request.resource.data.currentTurn != resource.data.currentTurn && request.resource.data.scoreApplied == false
+            : request.resource.data.currentTurn == resource.data.currentTurn && request.resource.data.scoreApplied == true
+              && getAfter(roomPath(roomId)).data.status == 'roundOver'
+              && validScoreSettlement(roomId, resource.data, request.resource.data))
           && validServerTime(request.resource.data.updatedAt);
         allow delete: if false;
       }
@@ -100,11 +171,10 @@ service cloud.firestore {
 
     match /roomCodes/{roomCode} {
       allow get: if signedIn();
-      allow list: if false;
+      allow list, update, delete: if false;
       allow create: if signedIn() && roomCode.size() == 5
         && request.resource.data.keys().hasOnly(['roomId','expiresAt'])
         && request.resource.data.roomId is string && request.resource.data.expiresAt > request.time;
-      allow update, delete: if false;
     }
 
     match /{document=**} { allow read, write: if false; }
