@@ -107,4 +107,7 @@ app.addEventListener("click", (event) => {
   }
 });
 
-renderHome();
+if (new URLSearchParams(location.search).get("backend") === "emulator") {
+  const { mountEmulatorApp } = await import("./emulator-app.js");
+  await mountEmulatorApp(app);
+} else renderHome();

@@ -30,6 +30,24 @@ Run tests:
 npm test
 ```
 
+## Firebase Emulator multiplayer
+
+Start local Auth and Firestore emulators:
+
+```powershell
+pnpm exec firebase emulators:start --project cyber-table-local --only auth,firestore
+```
+
+In another terminal run `npm run serve`, then open:
+
+```text
+http://127.0.0.1:4174/?backend=emulator
+```
+
+Open the same URL in a second browser session to receive a separate anonymous UID. This mode uses local emulators only and does not require Firebase login or a cloud project.
+
+Run the integration and rules suites with `pnpm test:emulator` and `pnpm test:rules`.
+
 ## Project boundaries
 
 Cyber Table has its own Git history, GitHub repository, and future Firebase project. It does not depend on or modify CyberSnake. See [`docs/ARCHITECTURE_PROPOSAL.md`](docs/ARCHITECTURE_PROPOSAL.md) for the confirmed architecture, state machine, security boundaries, and future `git subtree` migration plan.

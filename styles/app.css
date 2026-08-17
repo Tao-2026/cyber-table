@@ -56,6 +56,9 @@ button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--cyb
 .podium-place { display: grid; place-items: center; gap: 6px; min-height: 150px; padding: 16px 8px; border: 2px solid var(--cyber-border); border-radius: 22px 22px 8px 8px; background: var(--cyber-panel-strong); box-shadow: var(--cyber-shadow); }
 .podium-place:nth-child(1) { min-height: 210px; background: #675a28; }
 .podium-place span { font-size: 3rem; }
+.connection { padding: 9px 12px; border: 1px solid var(--cyber-border); border-radius: 999px; color: var(--cyber-muted); text-align: center; font-size: .82rem; font-weight: 900; letter-spacing: .06em; }
+.connection[data-state="synced"] { color: var(--cyber-mint); }
+.connection[data-state="offline"], .connection[data-state="error"] { color: var(--cyber-coral); }
 @media (min-width: 760px) and (orientation: landscape) {
   .app-shell.practice { width: min(100%, 980px); grid-template-columns: minmax(280px, .8fr) minmax(360px, 1fr); align-items: center; }
   .practice .topbar, .practice .game-header, .practice .matchup, .practice .turn-banner, .practice .status, .practice .game-actions { grid-column: 1; }
