@@ -17,3 +17,8 @@ test("join input ignores case, spaces and hyphens while legacy codes remain vali
 test("share links encode the normalized room code", () => {
   assert.equal(roomShareUrl("https://example.test/cyber-arcade/table/?backend=firebase", " ab-c 23 "), "https://example.test/cyber-arcade/table/?backend=firebase&room=ABC23");
 });
+
+test("share links may default the unified join role", () => {
+  assert.equal(new URL(roomShareUrl("https://example.test/cyber-table/", "a-b cde", "spectator")).searchParams.get("role"), "spectator");
+  assert.equal(new URL(roomShareUrl("https://example.test/cyber-table/", "abcde", "player")).searchParams.get("role"), "player");
+});

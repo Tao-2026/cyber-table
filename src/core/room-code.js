@@ -15,8 +15,10 @@ export function isLegacyRoomCode(value) {
   return /^[A-Z0-9]{5}$/.test(normalizeRoomCode(value));
 }
 
-export function roomShareUrl(baseUrl, code) {
+export function roomShareUrl(baseUrl, code, role = null) {
   const url = new URL(baseUrl);
   url.searchParams.set("room", normalizeRoomCode(code));
+  if (["player", "spectator"].includes(role)) url.searchParams.set("role", role);
+  else url.searchParams.delete("role");
   return url.href;
 }

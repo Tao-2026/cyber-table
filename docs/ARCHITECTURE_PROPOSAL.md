@@ -186,3 +186,13 @@ The Firebase multiplayer model layers a bounded series over individual Tic-Tac-T
 All series creation, round settlement, Party Score updates, role changes, and suggestion resolution use Firestore transactions. Security Rules independently validate membership, host/current-player authority, score idempotency, role locks, empty suggested cells, and move-count freshness. Lobby practice remains entirely local while the room listeners stay active.
 
 New room codes use five characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`. Normalization removes whitespace and hyphens and uppercases input; reads continue to accept legacy five-character alphanumeric mappings. A room-code mapping is an expiring join locator, not an authentication secret.
+
+# Unified Player/Spectator Entry (schema v4)
+
+Player and spectator identities now enter through the same room-code mapping. `role=player|spectator` in a share URL is only a requested default. The join transaction reads the authoritative room status and capacity: Lobby joins may enter either pool, while `playing`, `roundOver`, and series lifecycle states accept new members only as spectators. Rejoining the same anonymous UID is idempotent.
+
+New room documents maintain `memberCount`, `playerCount`, and `spectatorCount`, with `playerCount + spectatorCount == memberCount`, plus `settings.maxMembers = 8` and the existing `settings.maxActivePlayers`. The same transaction updates `memberIds`, the three counters, the stable next `seat`, and the member document. Legacy `activePlayerCount` remains mirrored during migration.
+
+Member documents add `requestedRole` and `joinedDuringSeries`. Members who arrive after the Lobby are spectator-only for that series. When a series settles, the room enters `seriesBreak`: spectators may request the player queue, players may step back to spectate, and the host may approve the next pool without changing seats or previously earned Party Score. `NEXT SERIES` pairs only confirmed `role == player` members and is transactionally exclusive with role changes.
+
+Terminal board validation and score application are intentionally separated into two protected transactions. The first commits exactly one legal terminal cell while leaving `scoreApplied == false`; the second atomically flips `scoreApplied`, applies exact Party Score deltas, settles the series, and enters `roundOver` or `seriesBreak`. This preserves exactly-once settlement while keeping the complete Rules evaluation below Firestore's expression limit.

@@ -31,14 +31,15 @@ export function createFirebaseRoomService({ db, uid }) {
       const codeRef = doc(db, "roomCodes", code);
       if ((await tx.get(codeRef)).exists()) throw new Error("Room code collision");
       const expiresAt = Timestamp.fromMillis(Date.now() + 6 * 60 * 60 * 1000);
-      tx.set(roomRef(roomId), { hostId: uid, roomCode: code, status: "lobby", currentMatchId: null, currentSeriesId: null, roundNumber: -1, seriesNumber: -1, gameVersion: 3, schemaVersion: 3, memberIds: [uid], memberCount: 1, activePlayerCount: 1, usedEmojis: [ROOM_EMOJIS[0]], createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt, settings: { maxPlayers: 8, maxActivePlayers: 6, gameType: "tic-tac-toe", seriesTargetWins: 2, maxSeriesRounds: 5 } });
+      tx.set(roomRef(roomId), { hostId: uid, roomCode: code, status: "lobby", currentMatchId: null, currentSeriesId: null, roundNumber: -1, seriesNumber: -1, gameVersion: 4, schemaVersion: 4, memberIds: [uid], memberCount: 1, playerCount: 1, spectatorCount: 0, activePlayerCount: 1, usedEmojis: [ROOM_EMOJIS[0]], createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt, settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, gameType: "tic-tac-toe", seriesTargetWins: 2, maxSeriesRounds: 5 } });
       tx.set(playerRef(roomId, uid), playerData(uid, ROOM_EMOJIS[0], 0, "player"));
       tx.set(codeRef, { roomId, expiresAt });
     });
     return roomId;
   }
 
-  async function join(code) {
+  async function join(code, requestedRole = "player") {
+    if (!["player", "spectator"].includes(requestedRole)) throw new Error("Choose player or spectator");
     code = normalizeRoomCode(code);
     const mapping = await getDoc(doc(db, "roomCodes", code));
     if (!mapping.exists()) throw new Error("Room not found");
@@ -46,15 +47,22 @@ export function createFirebaseRoomService({ db, uid }) {
     await runTransaction(db, async tx => {
       const ref = roomRef(roomId); const snapshot = await tx.get(ref); const data = snapshot.data();
       if (data.memberIds.includes(uid)) return;
-      if (data.status !== "lobby") throw new Error("Game already started");
-      if (data.memberCount >= data.settings.maxPlayers) throw new Error("Room is full");
+      const maxMembers = data.settings.maxMembers || data.settings.maxPlayers || 8;
+      if (data.memberCount >= maxMembers) throw new Error("Room is full (8/8)");
       const emoji = ROOM_EMOJIS.find(candidate => !data.usedEmojis.includes(candidate));
-      const activeCount = data.activePlayerCount ?? data.memberCount;
-      const role = activeCount < (data.settings.maxActivePlayers || data.settings.maxPlayers) ? "player" : "spectator";
-      tx.update(ref, { memberIds: [...data.memberIds, uid], memberCount: data.memberCount + 1, activePlayerCount: activeCount + (role === "player" ? 1 : 0), usedEmojis: [...data.usedEmojis, emoji], updatedAt: serverTimestamp() });
-      tx.set(playerRef(roomId, uid), playerData(uid, emoji, data.memberCount, role));
+      const playerCount = data.playerCount ?? data.activePlayerCount ?? data.memberCount;
+      const spectatorCount = data.spectatorCount ?? Math.max(0, data.memberCount - playerCount);
+      const maxPlayers = data.settings.maxActivePlayers || maxMembers;
+      const lobbyCanPlay = data.status === "lobby" && playerCount < maxPlayers;
+      const role = requestedRole === "player" && lobbyCanPlay ? "player" : "spectator";
+      const joinedDuringSeries = data.status !== "lobby";
+      tx.update(ref, { memberIds: [...data.memberIds, uid], memberCount: data.memberCount + 1, playerCount: playerCount + (role === "player" ? 1 : 0), spectatorCount: spectatorCount + (role === "spectator" ? 1 : 0), activePlayerCount: playerCount + (role === "player" ? 1 : 0), usedEmojis: [...data.usedEmojis, emoji], updatedAt: serverTimestamp() });
+      tx.set(playerRef(roomId, uid), playerData(uid, emoji, data.memberCount, role, joinedDuringSeries));
     });
-    return roomId;
+    const joined = (await getDocFromServer(playerRef(roomId, uid))).data();
+    const joinedRoom = (await getDocFromServer(roomRef(roomId))).data();
+    const downgraded = requestedRole === "player" && joined.role === "spectator";
+    return { roomId, role: joined.role || "player", downgraded, reason: downgraded ? (joinedRoom.status === "lobby" ? "playerPoolFull" : "gameStarted") : null };
   }
 
   async function resume(roomId) {
@@ -128,7 +136,7 @@ export function createFirebaseRoomService({ db, uid }) {
       if (!roomSnapshot.exists()) throw new Error("Room not found");
       const room = roomSnapshot.data();
       if (room.hostId !== uid) throw new Error("Host only");
-      if (initial ? room.status !== "lobby" : room.status !== "seriesOver") throw new Error(initial ? "Game already started" : "Series is not over");
+      if (initial ? room.status !== "lobby" : !["seriesBreak","seriesOver"].includes(room.status)) throw new Error(initial ? "Game already started" : "Series is not over");
       const playerSnapshots = await Promise.all(room.memberIds.map(id => tx.get(playerRef(roomId, id))));
       const players = playerSnapshots.map(snapshot => snapshot.data()).filter(player => player && (player.role || "player") === "player");
       if (players.length < 2) throw new Error("Need two active players");
@@ -139,6 +147,7 @@ export function createFirebaseRoomService({ db, uid }) {
       tx.set(seriesRef(roomId, seriesId), { ...createSeries(playerX, playerO, targetWins, seriesNumber), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
       tx.set(matchRef(roomId, matchId), matchData(playerX, playerO, roundNumber, seriesId, 1));
       tx.update(ref, { status: "playing", currentMatchId: matchId, currentSeriesId: seriesId, roundNumber, seriesNumber, updatedAt: serverTimestamp() });
+      for (const snapshot of playerSnapshots) if (snapshot.exists() && snapshot.data().joinedDuringSeries && (snapshot.data().role || "player") === "player") tx.update(snapshot.ref, { joinedDuringSeries: false, requestedRole: null, roleUpdatedAt: serverTimestamp() });
     });
     return matchId;
   }
@@ -182,40 +191,68 @@ export function createFirebaseRoomService({ db, uid }) {
     if (!["player", "spectator"].includes(role)) throw new Error("Invalid role");
     await runTransaction(db, async tx => {
       const room = (await tx.get(roomRef(roomId))).data();
-      if (room.status !== "lobby") throw new Error("Roles are locked during a series");
+      if (!["lobby","seriesBreak","seriesOver"].includes(room.status)) throw new Error("Roles are locked during a series");
       if (uid !== playerId && uid !== room.hostId) throw new Error("Cannot change this role");
       const targetRef = playerRef(roomId, playerId); const target = (await tx.get(targetRef)).data();
-      const priorRole = target.role || "player"; const active = room.activePlayerCount ?? room.memberCount;
+      const priorRole = target.role || "player"; const active = room.playerCount ?? room.activePlayerCount ?? room.memberCount;
       if (role === "player" && priorRole !== "player" && active >= (room.settings.maxActivePlayers || room.settings.maxPlayers)) throw new Error("Player pool is full");
-      const activePlayerCount = active + (role === priorRole ? 0 : role === "player" ? 1 : -1);
-      tx.update(roomRef(roomId), { activePlayerCount, updatedAt: serverTimestamp() });
-      tx.update(targetRef, { role, roleUpdatedAt: serverTimestamp(), lastSeenAt: serverTimestamp() });
+      const spectatorCount = room.spectatorCount ?? Math.max(0, room.memberCount - active);
+      const playerCount = active + (role === priorRole ? 0 : role === "player" ? 1 : -1);
+      const nextSpectatorCount = spectatorCount + (role === priorRole ? 0 : role === "spectator" ? 1 : -1);
+      tx.update(roomRef(roomId), { playerCount, spectatorCount: nextSpectatorCount, activePlayerCount: playerCount, updatedAt: serverTimestamp() });
+      tx.update(targetRef, { role, requestedRole: null, joinedDuringSeries: false, roleUpdatedAt: serverTimestamp(), lastSeenAt: serverTimestamp() });
+    });
+  }
+
+  async function requestRole(roomId, role) {
+    if (!["player","spectator"].includes(role)) throw new Error("Invalid role request");
+    await runTransaction(db, async tx => {
+      const room = (await tx.get(roomRef(roomId))).data();
+      if (room.status !== "seriesBreak") throw new Error("Role requests open between series");
+      const ref = playerRef(roomId, uid); const player = (await tx.get(ref)).data();
+      if (!player) throw new Error("Member not found");
+      if (role === "spectator" && (player.role || "player") === "player") {
+        const active = room.playerCount ?? room.activePlayerCount ?? room.memberCount;
+        const spectators = room.spectatorCount ?? Math.max(0, room.memberCount - active);
+        tx.update(roomRef(roomId), { playerCount: active - 1, spectatorCount: spectators + 1, activePlayerCount: active - 1, updatedAt: serverTimestamp() });
+        tx.update(ref, { role: "spectator", requestedRole: null, joinedDuringSeries: false, roleUpdatedAt: serverTimestamp(), lastSeenAt: serverTimestamp() });
+      } else {
+        tx.update(ref, { requestedRole: role === (player.role || "player") ? null : role, roleUpdatedAt: serverTimestamp(), lastSeenAt: serverTimestamp() });
+      }
     });
   }
 
   async function move(roomId, matchId, index) {
+    let terminal = false;
     await runTransaction(db, async tx => {
       const roomDocument = await tx.get(roomRef(roomId)); const room = roomDocument.data();
       if (room.status !== "playing" || room.currentMatchId !== matchId) throw new Error("No active match");
       const ref = matchRef(roomId, matchId); const snapshot = await tx.get(ref); const current = snapshot.data();
       const expected = current.currentTurn === "X" ? current.playerX : current.playerO;
       if (expected !== uid) throw new Error("Not your turn");
-      const next = makeMove(current, index); const terminal = next.status !== "playing";
+      const next = makeMove(current, index); terminal = next.status !== "playing";
+      tx.update(ref, { board: next.board, currentTurn: next.currentTurn, status: next.status, winner: next.winner, winningLine: next.winningLine || [], moveCount: next.moveCount, updatedAt: serverTimestamp() });
+    });
+    if (!terminal) return;
+    await runTransaction(db, async tx => {
+      const roomDocument = await tx.get(roomRef(roomId)); const room = roomDocument.data();
+      if (room.status !== "playing" || room.currentMatchId !== matchId) return;
+      const ref = matchRef(roomId, matchId); const snapshot = await tx.get(ref); const current = snapshot.data();
+      if (!current || current.status === "playing" || current.scoreApplied) return;
       const xRef = playerRef(roomId, current.playerX); const oRef = playerRef(roomId, current.playerO);
-      const terminalReads = terminal ? [tx.get(xRef), tx.get(oRef)] : [];
-      if (terminal && current.seriesId) terminalReads.push(tx.get(seriesRef(roomId, current.seriesId)));
-      const [xSnapshot, oSnapshot, seriesSnapshot = null] = terminal ? await Promise.all(terminalReads) : [null, null, null];
-      tx.update(ref, { board: next.board, currentTurn: next.currentTurn, status: next.status, winner: next.winner, winningLine: next.winningLine || [], moveCount: next.moveCount, scoreApplied: terminal, updatedAt: serverTimestamp() });
-      if (!terminal) return;
-      const xPoints = next.status === "draw" ? 1 : next.winner === "X" ? 3 : 0;
-      const oPoints = next.status === "draw" ? 1 : next.winner === "O" ? 3 : 0;
+      const terminalReads = [tx.get(xRef), tx.get(oRef)];
+      if (current.seriesId) terminalReads.push(tx.get(seriesRef(roomId, current.seriesId)));
+      const [xSnapshot, oSnapshot, seriesSnapshot = null] = await Promise.all(terminalReads);
+      tx.update(ref, { scoreApplied: true, updatedAt: serverTimestamp() });
+      const xPoints = current.status === "draw" ? 1 : current.winner === "X" ? 3 : 0;
+      const oPoints = current.status === "draw" ? 1 : current.winner === "O" ? 3 : 0;
       if (xPoints) tx.update(xRef, { partyScore: xSnapshot.data().partyScore + xPoints });
       if (oPoints) tx.update(oRef, { partyScore: oSnapshot.data().partyScore + oPoints });
       if (current.seriesId && seriesSnapshot) {
-        const winnerId = next.winner === "X" ? current.playerX : next.winner === "O" ? current.playerO : null;
+        const winnerId = current.winner === "X" ? current.playerX : current.winner === "O" ? current.playerO : null;
         const settledSeries = settleSeriesRound(seriesSnapshot.data(), winnerId);
         tx.update(seriesRef(roomId, current.seriesId), { winsByPlayer: settledSeries.winsByPlayer, roundsPlayed: settledSeries.roundsPlayed, status: settledSeries.status, winnerId: settledSeries.winnerId, updatedAt: serverTimestamp() });
-        tx.update(roomRef(roomId), { status: settledSeries.status === "playing" ? "roundOver" : "seriesOver", updatedAt: serverTimestamp() });
+        tx.update(roomRef(roomId), { status: settledSeries.status === "playing" ? "roundOver" : "seriesBreak", updatedAt: serverTimestamp() });
       } else tx.update(roomRef(roomId), { status: "roundOver", updatedAt: serverTimestamp() });
     });
   }
@@ -259,12 +296,12 @@ export function createFirebaseRoomService({ db, uid }) {
     await runTransaction(db, async tx => {
       const ref = roomRef(roomId); const snapshot = await tx.get(ref); const room = snapshot.data();
       if (room.hostId !== uid) throw new Error("Host only");
-      if (room.status !== "seriesOver") throw new Error("Series is not over");
+      if (!["seriesBreak","seriesOver"].includes(room.status)) throw new Error("Series is not over");
       tx.update(ref, { status: "partyOver", updatedAt: serverTimestamp() });
     });
   }
 
-  return Object.freeze({ uid, create, join, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, suggest, resolveSuggestion, muteSuggestions, endParty });
+  return Object.freeze({ uid, create, join, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, requestRole, suggest, resolveSuggestion, muteSuggestions, endParty });
 }
 
 function matchData(playerX, playerO, roundNumber, seriesId, seriesRoundNumber) {
@@ -272,6 +309,6 @@ function matchData(playerX, playerO, roundNumber, seriesId, seriesRoundNumber) {
   return { gameType: "tic-tac-toe", playerX, playerO, board: game.board, currentTurn: game.currentTurn, status: game.status, winner: game.winner, winningLine: [], moveCount: game.moveCount, scoreApplied: false, roundNumber, seriesId, seriesRoundNumber, suggestionsMutedMoveCount: -1, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
 }
 
-function playerData(uid, emoji, seat, role) {
-  return { playerId: uid, emoji, seat, role, partyScore: 0, joinedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), roleUpdatedAt: serverTimestamp(), status: "active" };
+function playerData(uid, emoji, seat, role, joinedDuringSeries = false) {
+  return { playerId: uid, emoji, seat, role, requestedRole: null, joinedDuringSeries, partyScore: 0, joinedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), roleUpdatedAt: serverTimestamp(), status: "active" };
 }

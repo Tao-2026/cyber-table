@@ -11,6 +11,9 @@ All notable changes to Cyber Table are documented here. The format follows
 - Default BEST OF 3 series play, with SINGLE ROUND and BEST OF 5 options that the host may change only while the room is still in the Lobby.
 - Local “PRACTICE WHILE WAITING / 等待时练习” for every Lobby member without leaving the room, changing party scores, or stopping Firebase listeners.
 - Explicit PLAYER, SPECTATOR, HOST, and YOU roles, with separate Lobby pools and host/member role controls before a series starts.
+- Unified five-character room entry with explicit `JOIN AS PLAYER / 作为玩家加入` and `JOIN AS SPECTATOR / 作为观众加入` actions; player and spectator share links may supply only a default role.
+- Live-series spectator joining that opens the current read-only match, series score, Party Score, rotation state, and existing structured suggestion controls without a refresh.
+- A `seriesBreak` player queue where spectators request the next player pool, existing players may step back to spectate, and the host approves requests before `NEXT SERIES`.
 - Structured spectator hand raises and one-cell move suggestions, including accept, dismiss, per-turn mute, an accessible Emoji halo, and no free-text messaging.
 
 ### Changed
@@ -20,6 +23,9 @@ All notable changes to Cyber Table are documented here. The format follows
 - Room-code input ignores case, spaces, and hyphens; shared join links carry the normalized code and the Lobby explains that a room code is not a password.
 - Player rotation now occurs after a complete series rather than after every individual round; spectators are excluded from pair selection and two-player rooms swap the opening X/O assignment between series.
 - Series and role state are included in realtime listeners, reconnect restoration, and authoritative server probes.
+- Room schema v4 maintains `memberCount`, `playerCount`, and `spectatorCount` atomically, preserves stable seats and earned Party Score through role changes, and marks members who joined during a series.
+- Requests to join as a player automatically become spectator joins when play has started or the player pool is full, with an explicit bilingual reason.
+- Terminal moves and idempotent score/series settlement now use consecutive protected transactions so Firestore Rules remain below their expression budget while score application stays atomic and exactly once.
 
 ### Fixed
 
@@ -35,7 +41,9 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Security
 
-- Firestore Rules restrict role changes to the Lobby, preserve seat and earned Party Score, and prevent spectators from moving or managing the party.
+- Firestore Rules restrict direct role changes to the Lobby or `seriesBreak`, bind all three room counters to member/role transactions, cap total membership at eight, preserve seat and earned Party Score, and prevent in-series promotion.
+- New members may create only their own member document; active-series joins must be spectators, non-members cannot read room subcollections, and legacy missing roles continue to resolve safely as players.
+- Host spectators retain legitimate host management actions but cannot bypass current-player or player-role checks to submit a board move.
 - Suggestion documents are member-readable, spectator-owned on submission, bound to the active match and move count, limited to empty cells, and resolvable only by the current player.
 - Suggestions never authorize or perform formal moves and cannot modify the board, turn, winner, series score, or Party Score.
 
@@ -43,7 +51,8 @@ All notable changes to Cyber Table are documented here. The format follows
 
 - Room recovery is intentionally tied to the original browser tab's anonymous identity; clearing browser site data or switching to a different device cannot recover that player's seat.
 - Suggestions are intentionally ephemeral per turn and provide no free-text chat, image upload, history feed, or cross-device identity recovery.
-- Room codes are convenient routing identifiers, not passwords; anyone who receives an active code may request to join until the room is full or play begins.
+- Room codes are convenient routing identifiers, not passwords; anyone who receives an active code may join until the eight-member room is full. After play begins, new identities are spectator-only.
+- Anonymous identity remains browser-tab scoped. A link's `role` parameter is only a UI default and never grants server authority.
 
 ## [0.4.0-beta.1] - 2026-08-17
 
