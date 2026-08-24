@@ -96,3 +96,27 @@ test("three UIDs rotate through a new pairing while the third player spectates",
     await Promise.all(services.map(service => deleteApp(service.app)));
   }
 });
+
+test("member resumes the same room and a server probe repairs a stale match view", async () => {
+  const { services, apis } = await identities(2, "resume-room");
+  const [host, guest] = apis;
+  try {
+    const roomId = await host.create("RSM01");
+    await guest.join("RSM01");
+    await host.start(roomId);
+    assert.equal(await guest.resume(roomId), roomId);
+
+    let current = await guest.probe(roomId);
+    assert.equal(current.match.board.every(cell => cell === null), true);
+    await host.move(roomId, current.currentMatchId, 0);
+    current = await guest.probe(roomId);
+    assert.equal(current.match.board[0], "X");
+    assert.equal(current.match.currentTurn, "O");
+
+    const outsider = (await identities(1, "resume-outsider"));
+    try { await assert.rejects(() => outsider.apis[0].resume(roomId), /no longer a member/); }
+    finally { await Promise.all(outsider.services.map(service => deleteApp(service.app))); }
+  } finally {
+    await Promise.all(services.map(service => deleteApp(service.app)));
+  }
+});
