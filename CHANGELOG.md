@@ -42,7 +42,7 @@ All notable changes to Cyber Table are documented here. The format follows
 ### Security
 
 - Firestore Rules restrict direct role changes to the Lobby or `seriesBreak`, bind all three room counters to member/role transactions, cap total membership at eight, preserve seat and earned Party Score, and prevent in-series promotion.
-- New members may create only their own member document; active-series joins must be spectators, non-members cannot read room subcollections, and legacy missing roles continue to resolve safely as players.
+- New members may create only their own member document; active-series joins must be spectators, non-members cannot read room subcollections, legacy missing roles continue to resolve safely as players, and schema-v3 counters migrate on the next join.
 - Host spectators retain legitimate host management actions but cannot bypass current-player or player-role checks to submit a board move.
 - Suggestion documents are member-readable, spectator-owned on submission, bound to the active match and move count, limited to empty cells, and resolvable only by the current player.
 - Suggestions never authorize or perform formal moves and cannot modify the board, turn, winner, series score, or Party Score.

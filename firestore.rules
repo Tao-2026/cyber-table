@@ -10,6 +10,8 @@ service cloud.firestore {
     function isMember(roomId) { return signedIn() && room(roomId).data.memberIds.hasAny([request.auth.uid]); }
     function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
     function validServerTime(field) { return field == request.time; }
+    function storedPlayerCount(data) { return data.keys().hasAny(['playerCount']) ? data.playerCount : (data.keys().hasAny(['activePlayerCount']) ? data.activePlayerCount : data.memberCount); }
+    function storedSpectatorCount(data) { return data.keys().hasAny(['spectatorCount']) ? data.spectatorCount : data.memberCount - storedPlayerCount(data); }
     function validBoard(board) { return board is list && board.size() == 9 && board.toSet().hasOnly([null, 'X', 'O']); }
     function hasLine(board, mark) {
       return (board[0] == mark && board[1] == mark && board[2] == mark)
@@ -109,9 +111,9 @@ service cloud.firestore {
             && request.resource.data.playerCount + request.resource.data.spectatorCount == request.resource.data.memberCount
             && request.resource.data.activePlayerCount == request.resource.data.playerCount
             && ((resource.data.status == 'lobby'
-                && ((request.resource.data.playerCount == resource.data.playerCount + 1 && request.resource.data.spectatorCount == resource.data.spectatorCount)
-                  || (request.resource.data.playerCount == resource.data.playerCount && request.resource.data.spectatorCount == resource.data.spectatorCount + 1)))
-              || (resource.data.status != 'lobby' && request.resource.data.playerCount == resource.data.playerCount && request.resource.data.spectatorCount == resource.data.spectatorCount + 1))
+                && ((request.resource.data.playerCount == storedPlayerCount(resource.data) + 1 && request.resource.data.spectatorCount == storedSpectatorCount(resource.data))
+                  || (request.resource.data.playerCount == storedPlayerCount(resource.data) && request.resource.data.spectatorCount == storedSpectatorCount(resource.data) + 1)))
+              || (resource.data.status != 'lobby' && request.resource.data.playerCount == storedPlayerCount(resource.data) && request.resource.data.spectatorCount == storedSpectatorCount(resource.data) + 1))
             && request.resource.data.playerCount <= resource.data.settings.maxActivePlayers
             && validServerTime(request.resource.data.updatedAt)
         ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['playerCount','spectatorCount']) ? (
@@ -120,9 +122,9 @@ service cloud.firestore {
             && request.resource.data.playerCount + request.resource.data.spectatorCount == resource.data.memberCount
             && request.resource.data.activePlayerCount == request.resource.data.playerCount
             && request.resource.data.playerCount >= 0 && request.resource.data.playerCount <= resource.data.settings.maxActivePlayers
-            && ((request.resource.data.playerCount == resource.data.playerCount + 1 && request.resource.data.spectatorCount == resource.data.spectatorCount - 1)
-              || (request.resource.data.playerCount == resource.data.playerCount - 1 && request.resource.data.spectatorCount == resource.data.spectatorCount + 1)
-              || (request.resource.data.playerCount == resource.data.playerCount && request.resource.data.spectatorCount == resource.data.spectatorCount))
+            && ((request.resource.data.playerCount == storedPlayerCount(resource.data) + 1 && request.resource.data.spectatorCount == storedSpectatorCount(resource.data) - 1)
+              || (request.resource.data.playerCount == storedPlayerCount(resource.data) - 1 && request.resource.data.spectatorCount == storedSpectatorCount(resource.data) + 1)
+              || (request.resource.data.playerCount == storedPlayerCount(resource.data) && request.resource.data.spectatorCount == storedSpectatorCount(resource.data)))
             && validServerTime(request.resource.data.updatedAt)
         ) : request.resource.data.diff(resource.data).affectedKeys().hasOnly(['settings','updatedAt']) ? (
           isHost(roomId) && resource.data.status == 'lobby' && request.resource.data.status == 'lobby'
@@ -157,8 +159,8 @@ service cloud.firestore {
           && (getAfter(roomPath(roomId)).data.status == 'lobby' || request.resource.data.role == 'spectator')
           && (request.resource.data.seat == 0 ? request.resource.data.role == 'player' :
             (request.resource.data.role == 'player'
-              ? getAfter(roomPath(roomId)).data.playerCount == room(roomId).data.playerCount + 1
-              : getAfter(roomPath(roomId)).data.spectatorCount == room(roomId).data.spectatorCount + 1))
+              ? getAfter(roomPath(roomId)).data.playerCount == storedPlayerCount(room(roomId).data) + 1
+              : getAfter(roomPath(roomId)).data.spectatorCount == storedSpectatorCount(room(roomId).data) + 1))
           && validServerTime(request.resource.data.joinedAt) && validServerTime(request.resource.data.lastSeenAt) && validServerTime(request.resource.data.roleUpdatedAt)
           && request.resource.data.status in ['active','away'];
         allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partyScore']) ? (
@@ -173,8 +175,8 @@ service cloud.firestore {
             && request.resource.data.role in ['player','spectator']
             && request.resource.data.requestedRole == null
             && request.resource.data.joinedDuringSeries == false
-            && getAfter(roomPath(roomId)).data.playerCount == room(roomId).data.playerCount + (request.resource.data.role == 'player' ? 1 : 0) - (resource.data.role == 'spectator' ? 0 : 1)
-            && getAfter(roomPath(roomId)).data.spectatorCount == room(roomId).data.spectatorCount + (request.resource.data.role == 'spectator' ? 1 : 0) - (resource.data.role == 'spectator' ? 1 : 0)
+            && getAfter(roomPath(roomId)).data.playerCount == storedPlayerCount(room(roomId).data) + (request.resource.data.role == 'player' ? 1 : 0) - (resource.data.role == 'spectator' ? 0 : 1)
+            && getAfter(roomPath(roomId)).data.spectatorCount == storedSpectatorCount(room(roomId).data) + (request.resource.data.role == 'spectator' ? 1 : 0) - (resource.data.role == 'spectator' ? 1 : 0)
             && validServerTime(request.resource.data.roleUpdatedAt) && validServerTime(request.resource.data.lastSeenAt)
           ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['requestedRole']) ? (
             signedIn() && playerId == request.auth.uid && room(roomId).data.status == 'seriesBreak'

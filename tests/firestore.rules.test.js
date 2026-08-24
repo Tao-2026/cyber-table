@@ -131,3 +131,15 @@ test("legacy schema-v2 match finishes and upgrades on the next round", async () 
   await assertSucceeds(createFirebaseRoomService({ db, uid: "host" }).nextMatch("LEGACY"));
   const upgraded = (await getDoc(doc(db, "rooms/LEGACY"))).data(); assert.equal(upgraded.status, "playing"); assert.ok(upgraded.currentSeriesId);
 });
+
+test("schema-v3 rooms migrate counters when a late spectator joins", async () => {
+  await env.withSecurityRulesDisabled(async context => {
+    const db = context.firestore(); const expiresAt = new Date(Date.now() + 3600000);
+    await setDoc(doc(db, "rooms/V3ROOM"), { hostId: "host", roomCode: "OLDV3", status: "playing", currentMatchId: "M1", currentSeriesId: "S1", roundNumber: 0, seriesNumber: 0, schemaVersion: 3, memberIds: ["host","guest"], memberCount: 2, activePlayerCount: 2, usedEmojis: ["🤖","🐼"], settings: { maxPlayers: 8, maxActivePlayers: 6, seriesTargetWins: 2, maxSeriesRounds: 5 }, updatedAt: new Date() });
+    for (const [id, seat] of [["host",0],["guest",1]]) await setDoc(doc(db, `rooms/V3ROOM/players/${id}`), { playerId: id, emoji: seat ? "🐼" : "🤖", seat, role: "player", partyScore: 0, status: "active" });
+    await setDoc(doc(db, "roomCodes/OLDV3"), { roomId: "V3ROOM", expiresAt });
+  });
+  const db = env.authenticatedContext("late").firestore(); const result = await createFirebaseRoomService({ db, uid: "late" }).join("OLDV3", "player");
+  assert.deepEqual({ role: result.role, reason: result.reason }, { role: "spectator", reason: "gameStarted" });
+  const migrated = (await getDoc(doc(db, "rooms/V3ROOM"))).data(); assert.deepEqual([migrated.memberCount, migrated.playerCount, migrated.spectatorCount], [3,2,1]);
+});
