@@ -1,6 +1,6 @@
 import { collection, doc, getDoc, getDocFromServer, getDocsFromServer, onSnapshot, runTransaction, serverTimestamp, Timestamp } from "firebase/firestore";
 import { createGame, makeMove } from "../games/tic-tac-toe/rules.js";
-import { ROOM_EMOJIS } from "../core/room-machine.js";
+import { AVATAR_IDS, DEFAULT_AVATAR_ID, avatarById, avatarFromLegacyEmoji, availableAvatars } from "../config/avatars.js";
 import { pairForRound } from "../core/round-robin.js";
 import { generateShortRoomCode, normalizeRoomCode } from "../core/room-code.js";
 import { createSeries, presetForTarget, settleSeriesRound } from "../core/series.js";
@@ -14,50 +14,66 @@ export function createFirebaseRoomService({ db, uid }) {
   const suggestionsRef = (roomId, matchId) => collection(db, "rooms", roomId, "matches", matchId, "suggestions");
   const suggestionRef = (roomId, matchId, playerId) => doc(db, "rooms", roomId, "matches", matchId, "suggestions", playerId);
 
-  async function create(code = null, maxAttempts = 5, codeGenerator = generateShortRoomCode) {
-    if (code) return createWithCode(normalizeRoomCode(code));
+  async function create(code = null, avatarId = DEFAULT_AVATAR_ID, maxAttempts = 5, codeGenerator = generateShortRoomCode) {
+    if (typeof avatarId === "number") { codeGenerator = maxAttempts; maxAttempts = avatarId; avatarId = DEFAULT_AVATAR_ID; }
+    validateAvatarId(avatarId);
+    if (code) return createWithCode(normalizeRoomCode(code), avatarId);
     for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-      try { return await createWithCode(codeGenerator()); }
+      try { return await createWithCode(codeGenerator(), avatarId); }
       catch (error) { if (!/collision/.test(error.message) || attempt === maxAttempts - 1) throw new Error("Could not reserve a room code. Please try again."); }
     }
     throw new Error("Could not reserve a room code. Please try again.");
   }
 
-  async function createWithCode(code) {
+  async function createWithCode(code, avatarId) {
     if (!/^[A-Z0-9]{5}$/.test(code)) throw new Error("Room code must contain five letters or numbers");
     const roomId = crypto.randomUUID();
     await runTransaction(db, async tx => {
       const codeRef = doc(db, "roomCodes", code);
       if ((await tx.get(codeRef)).exists()) throw new Error("Room code collision");
       const expiresAt = Timestamp.fromMillis(Date.now() + 6 * 60 * 60 * 1000);
-      tx.set(roomRef(roomId), { hostId: uid, roomCode: code, status: "lobby", currentMatchId: null, currentSeriesId: null, roundNumber: -1, seriesNumber: -1, gameVersion: 4, schemaVersion: 4, memberIds: [uid], memberCount: 1, playerCount: 1, spectatorCount: 0, activePlayerCount: 1, usedEmojis: [ROOM_EMOJIS[0]], createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt, settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, gameType: "tic-tac-toe", seriesTargetWins: 2, maxSeriesRounds: 5 } });
-      tx.set(playerRef(roomId, uid), playerData(uid, ROOM_EMOJIS[0], 0, "player"));
+      const avatar = avatarById(avatarId);
+      tx.set(roomRef(roomId), { hostId: uid, roomCode: code, status: "lobby", currentMatchId: null, currentSeriesId: null, roundNumber: -1, seriesNumber: -1, gameVersion: 5, schemaVersion: 5, memberIds: [uid], memberCount: 1, playerCount: 1, spectatorCount: 0, activePlayerCount: 1, usedAvatarIds: [avatar.id], usedEmojis: [avatar.emoji], createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt, settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, gameType: "tic-tac-toe", seriesTargetWins: 2, maxSeriesRounds: 5 } });
+      tx.set(playerRef(roomId, uid), playerData(uid, avatar, 0, "player"));
       tx.set(codeRef, { roomId, expiresAt });
     });
     return roomId;
   }
 
-  async function join(code, requestedRole = "player") {
+  async function join(code, requestedRole = "player", avatarId = null) {
     if (!["player", "spectator"].includes(requestedRole)) throw new Error("Choose player or spectator");
+    if (avatarId !== null) validateAvatarId(avatarId);
     code = normalizeRoomCode(code);
     const mapping = await getDoc(doc(db, "roomCodes", code));
     if (!mapping.exists()) throw new Error("Room not found");
     const roomId = mapping.data().roomId;
-    await runTransaction(db, async tx => {
+    try { await runTransaction(db, async tx => {
       const ref = roomRef(roomId); const snapshot = await tx.get(ref); const data = snapshot.data();
       if (data.memberIds.includes(uid)) return;
       const maxMembers = data.settings.maxMembers || data.settings.maxPlayers || 8;
       if (data.memberCount >= maxMembers) throw new Error("Room is full (8/8)");
-      const emoji = ROOM_EMOJIS.find(candidate => !data.usedEmojis.includes(candidate));
+      const usedAvatarIds = data.usedAvatarIds || (data.usedEmojis || []).map(emoji => avatarFromLegacyEmoji(emoji).id).filter(id => id !== "legacy");
+      const chosenAvatarId = avatarId || availableAvatars(usedAvatarIds, 1)[0]?.id;
+      if (!chosenAvatarId) throw new Error("No avatars available");
+      if (usedAvatarIds.includes(chosenAvatarId)) throw avatarTakenError(usedAvatarIds);
+      const avatar = avatarById(chosenAvatarId);
       const playerCount = data.playerCount ?? data.activePlayerCount ?? data.memberCount;
       const spectatorCount = data.spectatorCount ?? Math.max(0, data.memberCount - playerCount);
       const maxPlayers = data.settings.maxActivePlayers || maxMembers;
       const lobbyCanPlay = data.status === "lobby" && playerCount < maxPlayers;
       const role = requestedRole === "player" && lobbyCanPlay ? "player" : "spectator";
       const joinedDuringSeries = data.status !== "lobby";
-      tx.update(ref, { memberIds: [...data.memberIds, uid], memberCount: data.memberCount + 1, playerCount: playerCount + (role === "player" ? 1 : 0), spectatorCount: spectatorCount + (role === "spectator" ? 1 : 0), activePlayerCount: playerCount + (role === "player" ? 1 : 0), usedEmojis: [...data.usedEmojis, emoji], updatedAt: serverTimestamp() });
-      tx.set(playerRef(roomId, uid), playerData(uid, emoji, data.memberCount, role, joinedDuringSeries));
-    });
+      tx.update(ref, { memberIds: [...data.memberIds, uid], memberCount: data.memberCount + 1, playerCount: playerCount + (role === "player" ? 1 : 0), spectatorCount: spectatorCount + (role === "spectator" ? 1 : 0), activePlayerCount: playerCount + (role === "player" ? 1 : 0), usedAvatarIds: [...usedAvatarIds, avatar.id], usedEmojis: [...(data.usedEmojis || []), avatar.emoji], updatedAt: serverTimestamp() });
+      tx.set(playerRef(roomId, uid), playerData(uid, avatar, data.memberCount, role, joinedDuringSeries));
+    }); }
+    catch (error) {
+      if (avatarId !== null && error?.code === "permission-denied") {
+        const latest = (await getDocFromServer(roomRef(roomId))).data();
+        const usedAvatarIds = latest?.usedAvatarIds || [];
+        if (usedAvatarIds.includes(avatarId)) throw avatarTakenError(usedAvatarIds);
+      }
+      throw error;
+    }
     const joined = (await getDocFromServer(playerRef(roomId, uid))).data();
     const joinedRoom = (await getDocFromServer(roomRef(roomId))).data();
     const downgraded = requestedRole === "player" && joined.role === "spectator";
@@ -121,6 +137,17 @@ export function createFirebaseRoomService({ db, uid }) {
       players = snapshot.docs.map(item => item.data()).sort((a, b) => a.seat - b.seat); emit();
     }, onError);
     return () => { stopRoom(); stopPlayers(); matchStop?.(); seriesStop?.(); suggestionsStop?.(); };
+  }
+
+  async function preview(code) {
+    code = normalizeRoomCode(code);
+    const mapping = await getDocFromServer(doc(db, "roomCodes", code));
+    if (!mapping.exists()) throw new Error("Room not found");
+    const snapshot = await getDocFromServer(roomRef(mapping.data().roomId));
+    if (!snapshot.exists()) throw new Error("Room not found");
+    const data = snapshot.data();
+    const usedAvatarIds = data.usedAvatarIds || (data.usedEmojis || []).map(emoji => avatarFromLegacyEmoji(emoji).id).filter(id => id !== "legacy");
+    return { roomId: snapshot.id, status: data.status, memberCount: data.memberCount, maxMembers: data.settings?.maxMembers || data.settings?.maxPlayers || 8, spectatorOnly: data.status !== "lobby", usedAvatarIds };
   }
 
   async function start(roomId) { return createNextSeries(roomId, true); }
@@ -229,8 +256,12 @@ export function createFirebaseRoomService({ db, uid }) {
       const ref = matchRef(roomId, matchId); const snapshot = await tx.get(ref); const current = snapshot.data();
       const expected = current.currentTurn === "X" ? current.playerX : current.playerO;
       if (expected !== uid) throw new Error("Not your turn");
+      const approvedSuggestion = current.approvedSpectatorId && current.approvedSuggestionMoveCount === current.moveCount
+        ? (await tx.get(suggestionRef(roomId, matchId, current.approvedSpectatorId))).data()
+        : null;
       const next = makeMove(current, index); terminal = next.status !== "playing";
-      tx.update(ref, { board: next.board, currentTurn: next.currentTurn, status: next.status, winner: next.winner, winningLine: next.winningLine || [], moveCount: next.moveCount, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, updatedAt: serverTimestamp() });
+      const assisted = next.status === "won" && approvedSuggestion?.status === "suggested" && approvedSuggestion.suggestedCell === index;
+      tx.update(ref, { board: next.board, currentTurn: next.currentTurn, status: next.status, winner: next.winner, winningLine: next.winningLine || [], moveCount: next.moveCount, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, assistSpectatorId: assisted ? approvedSuggestion.spectatorId : null, assistAvatarId: assisted ? approvedSuggestion.spectatorAvatarId : null, updatedAt: serverTimestamp() });
     });
     if (!terminal) return;
     await runTransaction(db, async tx => {
@@ -264,7 +295,7 @@ export function createFirebaseRoomService({ db, uid }) {
       if ((spectator?.role || "player") !== "spectator") throw new Error("Spectators only");
       const ref = suggestionRef(roomId, matchId, uid); const prior = (await tx.get(ref)).data();
       if (prior?.moveCount === match.moveCount) throw new Error("Hand already handled this turn");
-      tx.set(ref, { roomId, seriesId: room.currentSeriesId, matchId, moveCount: match.moveCount, spectatorId: uid, spectatorEmoji: spectator.emoji, spectatorName: `Player ${spectator.seat + 1}`, status: "raised", suggestedCell: null, approvedBy: null, createdAt: serverTimestamp(), approvedAt: null, suggestedAt: null });
+      tx.set(ref, { roomId, seriesId: room.currentSeriesId, matchId, moveCount: match.moveCount, spectatorId: uid, spectatorAvatarId: spectator.avatarId || avatarFromLegacyEmoji(spectator.emoji).id, spectatorEmoji: spectator.emoji, spectatorName: `Player ${spectator.seat + 1}`, status: "raised", suggestedCell: null, approvedBy: null, createdAt: serverTimestamp(), approvedAt: null, suggestedAt: null });
     });
   }
 
@@ -311,14 +342,25 @@ export function createFirebaseRoomService({ db, uid }) {
     });
   }
 
-  return Object.freeze({ uid, create, join, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, requestRole, raiseHand, reviewHand, suggestCell, muteSuggestions, endParty });
+  return Object.freeze({ uid, create, join, preview, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, requestRole, raiseHand, reviewHand, suggestCell, muteSuggestions, endParty });
 }
 
 function matchData(playerX, playerO, roundNumber, seriesId, seriesRoundNumber) {
   const game = createGame();
-  return { gameType: "tic-tac-toe", playerX, playerO, board: game.board, currentTurn: game.currentTurn, status: game.status, winner: game.winner, winningLine: [], moveCount: game.moveCount, scoreApplied: false, roundNumber, seriesId, seriesRoundNumber, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+  return { gameType: "tic-tac-toe", playerX, playerO, board: game.board, currentTurn: game.currentTurn, status: game.status, winner: game.winner, winningLine: [], moveCount: game.moveCount, scoreApplied: false, roundNumber, seriesId, seriesRoundNumber, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, assistSpectatorId: null, assistAvatarId: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
 }
 
-function playerData(uid, emoji, seat, role, joinedDuringSeries = false) {
-  return { playerId: uid, emoji, seat, role, requestedRole: null, joinedDuringSeries, partyScore: 0, joinedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), roleUpdatedAt: serverTimestamp(), status: "active" };
+function playerData(uid, avatar, seat, role, joinedDuringSeries = false) {
+  return { playerId: uid, avatarId: avatar.id, emoji: avatar.emoji, seat, role, requestedRole: null, joinedDuringSeries, partyScore: 0, joinedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), roleUpdatedAt: serverTimestamp(), status: "active" };
+}
+
+function validateAvatarId(avatarId) {
+  if (typeof avatarId !== "string" || !AVATAR_IDS.includes(avatarId)) throw new Error("Invalid avatarId");
+}
+
+function avatarTakenError(usedAvatarIds) {
+  const error = new Error("That avatar just joined the party. Please choose another. / 这个头像刚刚被其他人选走了，请换一个。");
+  error.code = "avatar-taken";
+  error.availableAvatarIds = availableAvatars(usedAvatarIds, 3).map(avatar => avatar.id);
+  return error;
 }

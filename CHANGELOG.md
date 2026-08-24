@@ -8,6 +8,11 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Added
 
+- A pre-room family-friendly avatar picker automatically selects a local reviewed avatar before room creation or joining, with unlimited secure randomization and bilingual accessible names.
+- A single stable avatar-ID system now follows hosts, players, and spectators through the Lobby, match header, raised hands, suggestions, winning assists, and Party Podium.
+- Firestore transactions reserve unique avatar IDs per room and return three available alternatives when a concurrent join takes the selected avatar.
+- Per-tab avatar selection survives picker refreshes, while an established member's avatar survives refresh and reconnect and remains locked for that room.
+- Avatar choices use only bundled Emoji configuration: custom uploads, external image URLs, paid avatar services, and in-room avatar changes are intentionally unsupported in this version.
 - Default BEST OF 3 series play, with SINGLE ROUND and BEST OF 5 options that the host may change only while the room is still in the Lobby.
 - Local “PRACTICE WHILE WAITING / 等待时练习” for every Lobby member without leaving the room, changing party scores, or stopping Firebase listeners.
 - Explicit PLAYER, SPECTATOR, HOST, and YOU roles, with separate Lobby pools and host/member role controls before a series starts.

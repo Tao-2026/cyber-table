@@ -17,10 +17,10 @@ after(async () => env.cleanup());
 async function seedRoom({ board = Array(9).fill(null), currentTurn = "X", moveCount = 0 } = {}) {
   await env.withSecurityRulesDisabled(async context => {
     const db = context.firestore();
-    await setDoc(doc(db, "rooms/ROOM1"), { hostId: "host", roomCode: "ABCDE", status: "playing", currentMatchId: "M1", currentSeriesId: "S1", roundNumber: 0, seriesNumber: 0, memberIds: ["host","guest","watcher"], memberCount: 3, playerCount: 2, spectatorCount: 1, activePlayerCount: 2, usedEmojis: ["🤖","🐼","🐰"], settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, seriesTargetWins: 2, maxSeriesRounds: 5 }, updatedAt: new Date() });
-    for (const [id, seat] of [["host",0],["guest",1],["watcher",2]]) await setDoc(doc(db, `rooms/ROOM1/players/${id}`), { playerId: id, emoji: ["🤖","🐼","🐰"][seat], seat, role: id === "watcher" ? "spectator" : "player", requestedRole: null, joinedDuringSeries: id === "watcher", partyScore: 0, status: "active" });
+    await setDoc(doc(db, "rooms/ROOM1"), { hostId: "host", roomCode: "ABCDE", status: "playing", currentMatchId: "M1", currentSeriesId: "S1", roundNumber: 0, seriesNumber: 0, memberIds: ["host","guest","watcher"], memberCount: 3, playerCount: 2, spectatorCount: 1, activePlayerCount: 2, usedAvatarIds: ["robot","panda","bunny"], usedEmojis: ["🤖","🐼","🐰"], settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, seriesTargetWins: 2, maxSeriesRounds: 5 }, updatedAt: new Date() });
+    for (const [id, seat] of [["host",0],["guest",1],["watcher",2]]) await setDoc(doc(db, `rooms/ROOM1/players/${id}`), { playerId: id, avatarId: ["robot","panda","bunny"][seat], emoji: ["🤖","🐼","🐰"][seat], seat, role: id === "watcher" ? "spectator" : "player", requestedRole: null, joinedDuringSeries: id === "watcher", partyScore: 0, status: "active" });
     await setDoc(doc(db, "rooms/ROOM1/series/S1"), { playerA: "host", playerB: "guest", winsByPlayer: { host: 0, guest: 0 }, roundsPlayed: 0, targetWins: 2, maxRounds: 5, status: "playing", winnerId: null, pairingRoundNumber: 0, createdAt: new Date(), updatedAt: new Date() });
-    await setDoc(doc(db, "rooms/ROOM1/matches/M1"), { gameType: "tic-tac-toe", playerX: "host", playerO: "guest", board, currentTurn, status: "playing", winner: null, winningLine: [], moveCount, scoreApplied: false, roundNumber: 0, seriesId: "S1", seriesRoundNumber: 1, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, createdAt: new Date(), updatedAt: new Date() });
+    await setDoc(doc(db, "rooms/ROOM1/matches/M1"), { gameType: "tic-tac-toe", playerX: "host", playerO: "guest", board, currentTurn, status: "playing", winner: null, winningLine: [], moveCount, scoreApplied: false, roundNumber: 0, seriesId: "S1", seriesRoundNumber: 1, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, assistSpectatorId: null, assistAvatarId: null, createdAt: new Date(), updatedAt: new Date() });
   });
 }
 
@@ -37,6 +37,16 @@ test("authenticated player can get a room", async () => {
   await seedRoom();
   const snapshot = await assertSucceeds(getDoc(doc(env.authenticatedContext("guest").firestore(), "rooms/ROOM1")));
   assert.equal(snapshot.data().roomCode, "ABCDE");
+});
+
+test("member avatars are immutable and invalid ids cannot join", async () => {
+  await seedRoom(); const hostDb = env.authenticatedContext("host").firestore();
+  await assertFails(updateDoc(doc(hostDb, "rooms/ROOM1/players/host"), { avatarId: "fox", emoji: "🦊" }));
+  await assertFails(updateDoc(doc(env.authenticatedContext("guest").firestore(), "rooms/ROOM1/players/host"), { avatarId: "panda" }));
+  const outsiderDb = env.authenticatedContext("newcomer").firestore(); const batch = writeBatch(outsiderDb);
+  batch.update(doc(outsiderDb, "rooms/ROOM1"), { memberIds: ["host","guest","watcher","newcomer"], memberCount: 4, playerCount: 2, spectatorCount: 2, activePlayerCount: 2, usedAvatarIds: ["robot","panda","bunny","not-valid"], usedEmojis: ["🤖","🐼","🐰","❓"], updatedAt: serverTimestamp() });
+  batch.set(doc(outsiderDb, "rooms/ROOM1/players/newcomer"), { playerId: "newcomer", avatarId: "not-valid", emoji: "❓", seat: 3, role: "spectator", requestedRole: null, joinedDuringSeries: true, partyScore: 0, joinedAt: serverTimestamp(), lastSeenAt: serverTimestamp(), roleUpdatedAt: serverTimestamp(), status: "active" });
+  await assertFails(batch.commit());
 });
 
 test("spectator and non-current player moves are rejected", async () => {

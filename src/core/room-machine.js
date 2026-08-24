@@ -1,6 +1,7 @@
 import { createGame, makeMove } from "../games/tic-tac-toe/rules.js";
+import { AVATARS } from "../config/avatars.js";
 
-export const ROOM_EMOJIS = Object.freeze(["🤖", "🐼", "🐰", "🦊", "🐯", "🐸", "🦄", "🐙"]);
+export const ROOM_EMOJIS = Object.freeze(AVATARS.map(avatar => avatar.emoji));
 export const SCORE = Object.freeze({ win: 3, draw: 1, loss: 0 });
 
 export function createRoom({ code, hostId, emoji = ROOM_EMOJIS[0], now = Date.now() }) {

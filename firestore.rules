@@ -10,6 +10,7 @@ service cloud.firestore {
     function isMember(roomId) { return signedIn() && room(roomId).data.memberIds.hasAny([request.auth.uid]); }
     function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
     function validServerTime(field) { return field == request.time; }
+    function validAvatarId(id) { return id is string && id in ['robot','panda','bunny','fox','tiger','frog','monkey','dog','cat','koala','penguin','unicorn','octopus','lion','bear','hamster','cool','starstruck','smile','party','cowboy','alien','ghost','teddy']; }
     function storedPlayerCount(data) { return data.keys().hasAny(['playerCount']) ? data.playerCount : (data.keys().hasAny(['activePlayerCount']) ? data.activePlayerCount : data.memberCount); }
     function storedSpectatorCount(data) { return data.keys().hasAny(['spectatorCount']) ? data.spectatorCount : data.memberCount - storedPlayerCount(data); }
     function validBoard(board) { return board is list && board.size() == 9 && board.toSet().hasOnly([null, 'X', 'O']); }
@@ -79,12 +80,15 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list, delete: if false;
       allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','currentSeriesId','roundNumber','seriesNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','playerCount','spectatorCount','activePlayerCount','usedEmojis'])
+        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','currentSeriesId','roundNumber','seriesNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','playerCount','spectatorCount','activePlayerCount','usedAvatarIds','usedEmojis'])
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.roomCode is string && request.resource.data.roomCode.size() == 5
         && request.resource.data.status == 'lobby' && request.resource.data.currentMatchId == null && request.resource.data.currentSeriesId == null && request.resource.data.roundNumber == -1 && request.resource.data.seriesNumber == -1
         && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.memberCount == 1 && request.resource.data.playerCount == 1 && request.resource.data.spectatorCount == 0 && request.resource.data.activePlayerCount == 1
         && request.resource.data.usedEmojis is list && request.resource.data.usedEmojis.size() == 1
+        && request.resource.data.usedAvatarIds is list && request.resource.data.usedAvatarIds.size() == 1
+        && validAvatarId(request.resource.data.usedAvatarIds[0])
+        && request.resource.data.usedAvatarIds == [getAfter(playerPath(roomId, request.auth.uid)).data.avatarId]
         && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt)
         && request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time
         && request.resource.data.settings.maxMembers == 8
@@ -105,11 +109,15 @@ service cloud.firestore {
         ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['memberIds']) ? (
           signedIn() && !resource.data.memberIds.hasAny([request.auth.uid])
             && resource.data.memberCount < (resource.data.settings.keys().hasAny(['maxMembers']) ? resource.data.settings.maxMembers : resource.data.settings.maxPlayers)
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds','memberCount','playerCount','spectatorCount','activePlayerCount','usedEmojis','updatedAt'])
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds','memberCount','playerCount','spectatorCount','activePlayerCount','usedAvatarIds','usedEmojis','updatedAt'])
             && request.resource.data.memberIds == resource.data.memberIds.concat([request.auth.uid])
             && request.resource.data.memberCount == resource.data.memberCount + 1
             && request.resource.data.playerCount + request.resource.data.spectatorCount == request.resource.data.memberCount
             && request.resource.data.activePlayerCount == request.resource.data.playerCount
+            && request.resource.data.usedAvatarIds is list && request.resource.data.usedAvatarIds.size() == request.resource.data.memberCount
+            && request.resource.data.usedAvatarIds.toSet().size() == request.resource.data.usedAvatarIds.size()
+            && request.resource.data.usedAvatarIds.hasAny([getAfter(playerPath(roomId, request.auth.uid)).data.avatarId])
+            && (!resource.data.keys().hasAny(['usedAvatarIds']) || request.resource.data.usedAvatarIds.toSet().hasAll(resource.data.usedAvatarIds.toSet()))
             && ((resource.data.status == 'lobby'
                 && ((request.resource.data.playerCount == storedPlayerCount(resource.data) + 1 && request.resource.data.spectatorCount == storedSpectatorCount(resource.data))
                   || (request.resource.data.playerCount == storedPlayerCount(resource.data) && request.resource.data.spectatorCount == storedSpectatorCount(resource.data) + 1)))
@@ -145,11 +153,13 @@ service cloud.firestore {
       match /players/{playerId} {
         allow read: if isMember(roomId);
         allow create: if signedIn() && playerId == request.auth.uid
-          && request.resource.data.keys().hasOnly(['playerId','emoji','seat','role','requestedRole','joinedDuringSeries','partyScore','joinedAt','lastSeenAt','roleUpdatedAt','status'])
+          && request.resource.data.keys().hasOnly(['playerId','avatarId','emoji','seat','role','requestedRole','joinedDuringSeries','partyScore','joinedAt','lastSeenAt','roleUpdatedAt','status'])
           && request.resource.data.playerId == request.auth.uid
           && getAfter(roomPath(roomId)).data.memberIds.hasAny([request.auth.uid])
           && request.resource.data.seat == getAfter(roomPath(roomId)).data.memberCount - 1
           && getAfter(roomPath(roomId)).data.usedEmojis.hasAny([request.resource.data.emoji])
+          && validAvatarId(request.resource.data.avatarId)
+          && getAfter(roomPath(roomId)).data.usedAvatarIds.hasAny([request.resource.data.avatarId])
           && request.resource.data.emoji is string && request.resource.data.emoji.size() <= 8
           && request.resource.data.seat is int && request.resource.data.seat >= 0 && request.resource.data.seat < 8
           && request.resource.data.partyScore == 0
@@ -196,7 +206,7 @@ service cloud.firestore {
       match /matches/{matchId} {
         allow read: if isMember(roomId);
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','approvedSpectatorId','approvedSuggestionMoveCount','createdAt','updatedAt'])
+          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','approvedSpectatorId','approvedSuggestionMoveCount','assistSpectatorId','assistAvatarId','createdAt','updatedAt'])
           && request.resource.data.gameType == 'tic-tac-toe' && validBoard(request.resource.data.board)
           && request.resource.data.playerX != request.resource.data.playerO
           && room(roomId).data.memberIds.hasAny([request.resource.data.playerX])
@@ -205,6 +215,7 @@ service cloud.firestore {
           && request.resource.data.status == 'playing' && request.resource.data.winner == null
           && request.resource.data.winningLine.size() == 0 && request.resource.data.scoreApplied == false && request.resource.data.suggestionsMutedMoveCount == -1
           && request.resource.data.approvedSpectatorId == null && request.resource.data.approvedSuggestionMoveCount == -1
+          && request.resource.data.assistSpectatorId == null && request.resource.data.assistAvatarId == null
           && request.resource.data.seriesId == getAfter(roomPath(roomId)).data.currentSeriesId
           && getAfter(roomPath(roomId)).data.currentMatchId == matchId
           && getAfter(roomPath(roomId)).data.status == 'playing'
@@ -236,11 +247,21 @@ service cloud.firestore {
             && resource.data.status == 'playing' && resource.data.scoreApplied == false && request.resource.data.scoreApplied == false
             && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
             && (!get(playerPath(roomId, request.auth.uid)).data.keys().hasAny(['role']) || get(playerPath(roomId, request.auth.uid)).data.role == 'player')
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','winningLine','moveCount','approvedSpectatorId','approvedSuggestionMoveCount','updatedAt'])
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','winningLine','moveCount','approvedSpectatorId','approvedSuggestionMoveCount','assistSpectatorId','assistAvatarId','updatedAt'])
             && validBoard(request.resource.data.board) && validMoveBoard(resource.data.board, request.resource.data.board, resource.data.currentTurn)
             && request.resource.data.moveCount == resource.data.moveCount + 1 && validResult(request.resource.data)
             && (!request.resource.data.keys().hasAny(['approvedSpectatorId','approvedSuggestionMoveCount'])
               || (request.resource.data.approvedSpectatorId == null && request.resource.data.approvedSuggestionMoveCount == -1))
+            && ((!request.resource.data.keys().hasAny(['assistSpectatorId','assistAvatarId']))
+              || (request.resource.data.assistSpectatorId == null && request.resource.data.assistAvatarId == null)
+              || (request.resource.data.status == 'won' && resource.data.approvedSpectatorId != null
+                && request.resource.data.assistSpectatorId == resource.data.approvedSpectatorId
+                && validAvatarId(request.resource.data.assistAvatarId)
+                && request.resource.data.assistAvatarId == get(/databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/suggestions/$(resource.data.approvedSpectatorId)).data.spectatorAvatarId
+                && get(/databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/suggestions/$(resource.data.approvedSpectatorId)).data.status == 'suggested'
+                && get(/databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/suggestions/$(resource.data.approvedSpectatorId)).data.suggestedCell >= 0
+                && resource.data.board[get(/databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/suggestions/$(resource.data.approvedSpectatorId)).data.suggestedCell] == null
+                && request.resource.data.board[get(/databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/suggestions/$(resource.data.approvedSpectatorId)).data.suggestedCell] == resource.data.currentTurn))
             && (request.resource.data.status == 'playing' ? request.resource.data.currentTurn != resource.data.currentTurn : request.resource.data.currentTurn == resource.data.currentTurn)
             && validServerTime(request.resource.data.updatedAt)
           );
@@ -251,9 +272,11 @@ service cloud.firestore {
           allow create: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
             && request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
             && get(matchPath(roomId, matchId)).data.status == 'playing'
-            && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
+            && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorAvatarId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
             && request.resource.data.roomId == roomId && request.resource.data.seriesId == room(roomId).data.currentSeriesId && request.resource.data.matchId == matchId
             && request.resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount && request.resource.data.spectatorId == request.auth.uid
+            && validAvatarId(request.resource.data.spectatorAvatarId)
+            && (!get(playerPath(roomId, request.auth.uid)).data.keys().hasAny(['avatarId']) || request.resource.data.spectatorAvatarId == get(playerPath(roomId, request.auth.uid)).data.avatarId)
             && request.resource.data.status == 'raised' && request.resource.data.suggestedCell == null && request.resource.data.approvedBy == null
             && request.resource.data.approvedAt == null && request.resource.data.suggestedAt == null && validServerTime(request.resource.data.createdAt);
           allow update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
@@ -263,7 +286,7 @@ service cloud.firestore {
             && ((
               request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
               && resource.data.moveCount < request.resource.data.moveCount && request.resource.data.status == 'raised'
-              && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
+              && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorAvatarId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
               && request.resource.data.roomId == roomId && request.resource.data.spectatorId == request.auth.uid
               && request.resource.data.suggestedCell == null && request.resource.data.approvedBy == null && request.resource.data.approvedAt == null && request.resource.data.suggestedAt == null
               && validServerTime(request.resource.data.createdAt)

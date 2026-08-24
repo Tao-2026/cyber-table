@@ -36,7 +36,7 @@ test("phone layout keeps practice board and controls in normal flow", async () =
 test("unified join offers explicit player and spectator entry with role-aware links", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
   const codes = await readFile("src/core/room-code.js", "utf8");
-  for (const text of ["JOIN AS PLAYER / 作为玩家加入", "JOIN AS SPECTATOR / 作为观众加入", "Game already started. You joined as a spectator.", "比赛已经开始，你已作为观众加入。", "SHARE PLAYER LINK", "SHARE SPECTATOR LINK"]) assert.ok(source.includes(text));
+  for (const text of ["PLAYER / 玩家", "SPECTATOR / 观众", "CONFIRM AND JOIN / 确认并加入", "Game already started. You joined as a spectator.", "比赛已经开始，你已作为观众加入。", "SHARE PLAYER LINK", "SHARE SPECTATOR LINK"]) assert.ok(source.includes(text));
   assert.match(codes, /searchParams\.set\("role", role\)/);
   assert.match(source, /ROOM \$\{room\.memberCount\}/);
 });
@@ -59,4 +59,19 @@ test("every match state keeps a public room code and spectator invite", async ()
   for (const text of ["COPY CODE / 复制房间码", "INVITE SPECTATORS / 邀请观众", "Friends can join as spectators while the game is running.", "比赛进行中，朋友仍可使用房间码加入观战。"] ) assert.ok(source.includes(text));
   assert.match(source, /searchParams\.set\("role", "spectator"\)/); assert.doesNotMatch(source, /spectatorInviteUrl[\s\S]{0,250}roomId/);
   assert.match(css, /\.match-invite/); assert.match(css, /@media \(max-width: 420px\)[\s\S]*\.match-invite/);
+});
+
+test("prejoin avatar picker is persistent, accessible, and role aware", async () => {
+  const source = await readFile("src/emulator-app.js", "utf8"); const css = await readFile("styles/app.css", "utf8");
+  for (const text of ["YOUR AVATAR / 你的头像", "RANDOMIZE / 换一个", "CONFIRM AND CREATE / 确认并创建", "CONFIRM AND JOIN / 确认并加入", "Selected avatar:", "当前头像："]) assert.ok(source.includes(text));
+  assert.match(source, /cyberTable\.selectedAvatar/); assert.match(source, /sessionStorage\.setItem\(avatarSessionKey/);
+  assert.match(source, /api\.create\(null, selectedAvatar\.id\)/); assert.match(source, /api\.join\([^\n]+selectedAvatar\.id\)/);
+  assert.match(css, /prefers-reduced-motion/); assert.match(css, /\.avatar-preview/);
+});
+
+test("all live identity surfaces resolve the stored avatar instead of rerandomizing", async () => {
+  const source = await readFile("src/emulator-app.js", "utf8");
+  assert.match(source, /function memberAvatar\(member\) \{ return resolveAvatar\(member\); \}/);
+  assert.match(source, /ASSIST · PLAYER/); assert.match(source, /spectatorAvatarId/); assert.match(source, /Party Podium/);
+  assert.doesNotMatch(source.match(/function renderRoom[\s\S]*?function waitingResult/)?.[0] || "", /randomAvatar\(/);
 });

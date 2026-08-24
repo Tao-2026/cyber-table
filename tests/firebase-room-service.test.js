@@ -146,3 +146,30 @@ test("concurrent joins cannot exceed eight members", async () => {
     assert.equal(new Set(room.memberIds).size, 8);
   } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
+
+test("selected avatar ids are unique, reconnect is idempotent, and conflicts return alternatives", async () => {
+  const { services, apis } = await identities(5, "avatar-unique"); const [host, guest, watcher, first, second] = apis; const db = services[0].db;
+  try {
+    const roomId = await host.create("AVTR1", "robot"); await guest.join("AVTR1", "player", "panda"); await watcher.join("AVTR1", "spectator", "bunny");
+    assert.equal((await data(db, "rooms", roomId, "players", host.uid)).avatarId, "robot");
+    assert.equal((await data(db, "rooms", roomId, "players", guest.uid)).avatarId, "panda");
+    assert.equal((await data(db, "rooms", roomId, "players", watcher.uid)).avatarId, "bunny");
+    const attempts = await Promise.allSettled([first.join("AVTR1", "spectator", "fox"), second.join("AVTR1", "spectator", "fox")]);
+    assert.equal(attempts.filter(item => item.status === "fulfilled").length, 1);
+    const rejected = attempts.find(item => item.status === "rejected").reason; assert.equal(rejected.code, "avatar-taken"); assert.equal(rejected.availableAvatarIds.length, 3);
+    const before = await data(db, "rooms", roomId); const resumed = await guest.join("AVTR1", "spectator", "tiger"); const after = await data(db, "rooms", roomId);
+    assert.equal(resumed.role, "player"); assert.equal(after.memberCount, before.memberCount); assert.equal((await data(db, "rooms", roomId, "players", guest.uid)).avatarId, "panda");
+    assert.equal(new Set(after.usedAvatarIds).size, after.usedAvatarIds.length); await assert.rejects(() => guest.join("AVTR1", "player", "not-valid"), /Invalid avatarId/);
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
+});
+
+test("an adopted winning suggestion records the spectator assist avatar", async () => {
+  const { services, apis } = await identities(3, "avatar-assist"); const [host, guest, watcher] = apis; const db = services[0].db;
+  try {
+    const roomId = await host.create("AST01", "robot"); await guest.join("AST01", "player", "panda"); await watcher.join("AST01", "spectator", "bunny"); await host.updateSeriesSetting(roomId, 1); await host.start(roomId);
+    let room = await data(db, "rooms", roomId); await host.move(roomId, room.currentMatchId, 0); await guest.move(roomId, room.currentMatchId, 3); await host.move(roomId, room.currentMatchId, 1); await guest.move(roomId, room.currentMatchId, 4);
+    await watcher.raiseHand(roomId, room.currentMatchId); await host.reviewHand(roomId, room.currentMatchId, watcher.uid, "approved"); await watcher.suggestCell(roomId, room.currentMatchId, 2); await host.move(roomId, room.currentMatchId, 2);
+    room = await data(db, "rooms", roomId); const match = await data(db, "rooms", roomId, "matches", room.currentMatchId);
+    assert.equal(match.status, "won"); assert.equal(match.assistSpectatorId, watcher.uid); assert.equal(match.assistAvatarId, "bunny");
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
+});
