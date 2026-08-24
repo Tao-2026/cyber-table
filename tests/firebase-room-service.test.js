@@ -6,117 +6,80 @@ import { createFirebaseServices, localEmulatorConfig } from "../src/services/fir
 import { createFirebaseRoomService } from "../src/services/firebase-room-service.js";
 
 async function identities(count, label) {
-  const services = await Promise.all(Array.from({ length: count }, (_, index) =>
-    createFirebaseServices({ config: localEmulatorConfig, emulator: true, appName: `${label}-${index}-${Date.now()}` })
-  ));
+  const services = await Promise.all(Array.from({ length: count }, (_, index) => createFirebaseServices({ config: localEmulatorConfig, emulator: true, appName: `${label}-${index}-${Date.now()}` })));
   return { services, apis: services.map(createFirebaseRoomService) };
 }
-
-async function roomData(db, roomId) {
-  return (await getDoc(doc(db, "rooms", roomId))).data();
-}
-
-async function matchData(db, roomId, matchId) {
-  return (await getDoc(doc(db, "rooms", roomId, "matches", matchId))).data();
-}
-
+const data = async (db, ...path) => (await getDoc(doc(db, ...path))).data();
 async function playMoves(apisByUid, db, roomId, moves) {
   for (const index of moves) {
-    const room = await roomData(db, roomId);
-    const match = await matchData(db, roomId, room.currentMatchId);
-    const uid = match.currentTurn === "X" ? match.playerX : match.playerO;
-    await apisByUid.get(uid).move(roomId, room.currentMatchId, index);
+    const room = await data(db, "rooms", roomId); const match = await data(db, "rooms", roomId, "matches", room.currentMatchId);
+    await apisByUid.get(match.currentTurn === "X" ? match.playerX : match.playerO).move(roomId, room.currentMatchId, index);
   }
 }
 
-test("two UIDs draw, settle once, advance concurrently, win and end at podium state", async () => {
-  const { services, apis } = await identities(2, "two-player");
-  const [host, guest] = apis; const db = services[0].db;
+test("best-of-three keeps the pair, settles once, and gates next series", async () => {
+  const { services, apis } = await identities(2, "series-two"); const [host, guest] = apis; const db = services[0].db;
   try {
-    assert.notEqual(host.uid, guest.uid);
-    const roomId = await host.create("T2P01");
-    assert.equal(await guest.join("T2P01"), roomId);
-    await assert.rejects(() => guest.start(roomId), /Host only/);
-    await host.start(roomId);
-    const byUid = new Map(apis.map(api => [api.uid, api]));
-    await playMoves(byUid, db, roomId, [0,1,2,4,3,5,7,6,8]);
-
-    let room = await roomData(db, roomId); let match = await matchData(db, roomId, room.currentMatchId);
-    assert.equal(room.status, "roundOver");
-    assert.equal(match.status, "draw");
-    assert.equal(match.scoreApplied, true);
-    const drawPlayers = (await getDocs(collection(db, "rooms", roomId, "players"))).docs.map(item => item.data());
-    assert.deepEqual(drawPlayers.map(player => player.partyScore).sort(), [1,1]);
-    await assert.rejects(() => host.move(roomId, room.currentMatchId, 0), /No active match/);
-    await assert.rejects(() => guest.nextMatch(roomId), /Host only/);
-    await assert.rejects(() => guest.endParty(roomId), /Host only/);
-
-    const attempts = await Promise.allSettled([host.nextMatch(roomId), host.nextMatch(roomId)]);
-    assert.equal(attempts.filter(result => result.status === "fulfilled").length, 1);
-    assert.equal(attempts.filter(result => result.status === "rejected").length, 1);
-    room = await roomData(db, roomId); match = await matchData(db, roomId, room.currentMatchId);
-    assert.equal(room.status, "playing");
-    assert.equal(room.roundNumber, 1);
-    assert.equal(match.playerX, guest.uid);
-    assert.equal(match.playerO, host.uid);
-    assert.equal((await getDocs(collection(db, "rooms", roomId, "matches"))).size, 2);
-
-    await playMoves(byUid, db, roomId, [0,3,1,4,2]);
-    room = await roomData(db, roomId); match = await matchData(db, roomId, room.currentMatchId);
-    assert.equal(match.status, "won");
-    assert.deepEqual(match.winningLine, [0,1,2]);
-    const scored = (await getDocs(collection(db, "rooms", roomId, "players"))).docs.map(item => item.data());
-    assert.equal(scored.find(player => player.playerId === guest.uid).partyScore, 4);
-    assert.equal(scored.find(player => player.playerId === host.uid).partyScore, 1);
-
-    await host.endParty(roomId);
-    assert.equal((await roomData(db, roomId)).status, "partyOver");
-  } finally {
-    await Promise.all(services.map(service => deleteApp(service.app)));
-  }
+    const roomId = await host.create("S2P01"); await guest.join(" s2-p01 ");
+    let room = await data(db, "rooms", roomId); assert.equal(room.settings.seriesTargetWins, 2); assert.equal(room.settings.maxSeriesRounds, 5);
+    await host.updateSeriesSetting(roomId, 3); await host.updateSeriesSetting(roomId, 2); await assert.rejects(() => guest.updateSeriesSetting(roomId, 1), /Host only/);
+    await host.start(roomId); await assert.rejects(() => host.updateSeriesSetting(roomId, 1), /locked/);
+    const byUid = new Map(apis.map(api => [api.uid, api])); await playMoves(byUid, db, roomId, [0,3,1,4,2]);
+    room = await data(db, "rooms", roomId); let series = await data(db, "rooms", roomId, "series", room.currentSeriesId);
+    assert.equal(room.status, "roundOver"); assert.equal(series.roundsPlayed, 1); assert.equal(series.winsByPlayer[host.uid], 1); await assert.rejects(() => host.endParty(roomId), /Series is not over/);
+    const attempts = await Promise.allSettled([host.nextMatch(roomId), host.nextMatch(roomId)]); assert.equal(attempts.filter(item => item.status === "fulfilled").length, 1);
+    room = await data(db, "rooms", roomId); const match = await data(db, "rooms", roomId, "matches", room.currentMatchId); assert.deepEqual(new Set([match.playerX, match.playerO]), new Set([host.uid, guest.uid]));
+    await playMoves(byUid, db, roomId, [0,3,1,4,8,5]); room = await data(db, "rooms", roomId); series = await data(db, "rooms", roomId, "series", room.currentSeriesId);
+    assert.equal(room.status, "seriesOver"); assert.equal(series.status, "won"); assert.equal(series.winnerId, host.uid);
+    const players = (await getDocs(collection(db, "rooms", roomId, "players"))).docs.map(item => item.data()); assert.equal(players.find(item => item.playerId === host.uid).partyScore, 6);
+    await host.endParty(roomId); assert.equal((await data(db, "rooms", roomId)).status, "partyOver");
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
 
-test("three UIDs rotate through a new pairing while the third player spectates", async () => {
-  const { services, apis } = await identities(3, "three-player");
-  const [host, guest, third] = apis; const db = services[0].db;
+test("roles lock at start and spectator suggestions never place a move", async () => {
+  const { services, apis } = await identities(3, "roles-suggestions"); const [host, guest, spectator] = apis; const db = services[0].db;
   try {
-    const roomId = await host.create("T3P01");
-    await guest.join("T3P01"); await third.join("T3P01"); await host.start(roomId);
-    const byUid = new Map(apis.map(api => [api.uid, api]));
-    let room = await roomData(db, roomId); let match = await matchData(db, roomId, room.currentMatchId);
-    assert.deepEqual([match.playerX, match.playerO], [host.uid, guest.uid]);
-    await assert.rejects(() => third.move(roomId, room.currentMatchId, 8), /Not your turn/);
-    await playMoves(byUid, db, roomId, [0,3,1,4,2]);
-    await host.nextMatch(roomId);
-    room = await roomData(db, roomId); match = await matchData(db, roomId, room.currentMatchId);
-    assert.deepEqual(new Set([match.playerX, match.playerO]), new Set([host.uid, third.uid]));
-    assert.equal(match.playerX, third.uid);
-    assert.equal(room.roundNumber, 1);
-  } finally {
-    await Promise.all(services.map(service => deleteApp(service.app)));
-  }
+    const roomId = await host.create("ROLE1"); await guest.join("ROLE1"); await spectator.join("ROLE1");
+    await assert.rejects(() => guest.setRole(roomId, spectator.uid, "spectator"), /Cannot change/);
+    await host.setRole(roomId, guest.uid, "spectator"); await host.setRole(roomId, guest.uid, "player");
+    assert.equal((await data(db, "rooms", roomId, "players", guest.uid)).partyScore, 0);
+    await spectator.setRole(roomId, spectator.uid, "spectator");
+    assert.equal((await data(db, "rooms", roomId, "players", spectator.uid)).role, "spectator"); await host.updateSeriesSetting(roomId, 1); await host.start(roomId);
+    await assert.rejects(() => spectator.setRole(roomId, spectator.uid, "player"), /locked/); const room = await data(db, "rooms", roomId); let match = await data(db, "rooms", roomId, "matches", room.currentMatchId);
+    await assert.rejects(() => guest.suggest(roomId, room.currentMatchId, 4), /Spectators only/); await spectator.suggest(roomId, room.currentMatchId, 4); await new Promise(resolve => setTimeout(resolve, 520)); await spectator.suggest(roomId, room.currentMatchId, 5);
+    let suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid); assert.equal(suggestion.suggestedCell, 5); assert.equal(suggestion.status, "pending");
+    await assert.rejects(() => guest.resolveSuggestion(roomId, room.currentMatchId, spectator.uid, "accepted"), /Current player only/); await host.resolveSuggestion(roomId, room.currentMatchId, spectator.uid, "accepted");
+    match = await data(db, "rooms", roomId, "matches", room.currentMatchId); suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid); assert.equal(match.board.every(cell => cell === null), true); assert.equal(suggestion.status, "accepted");
+    await host.muteSuggestions(roomId, room.currentMatchId); assert.equal((await data(db, "rooms", roomId, "matches", room.currentMatchId)).suggestionsMutedMoveCount, 0);
+    await host.move(roomId, room.currentMatchId, 0); await new Promise(resolve => setTimeout(resolve, 520)); await assert.rejects(() => spectator.suggest(roomId, room.currentMatchId, 0), /empty square/); await assert.rejects(() => spectator.move(roomId, room.currentMatchId, 1), /Not your turn/);
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
 
-test("member resumes the same room and a server probe repairs a stale match view", async () => {
-  const { services, apis } = await identities(2, "resume-room");
-  const [host, guest] = apis;
+test("three active players rotate only after a series and concurrent next series creates one", async () => {
+  const { services, apis } = await identities(3, "series-rotate"); const [host, guest, third] = apis; const db = services[0].db;
   try {
-    const roomId = await host.create("RSM01");
-    await guest.join("RSM01");
-    await host.start(roomId);
-    assert.equal(await guest.resume(roomId), roomId);
+    const roomId = await host.create("ROT31"); await guest.join("ROT31"); await third.join("ROT31"); await host.updateSeriesSetting(roomId, 1); await host.start(roomId);
+    const byUid = new Map(apis.map(api => [api.uid, api])); await playMoves(byUid, db, roomId, [0,3,1,4,2]); let room = await data(db, "rooms", roomId); assert.equal(room.status, "seriesOver");
+    const attempts = await Promise.allSettled([host.nextSeries(roomId), host.nextSeries(roomId)]); assert.equal(attempts.filter(item => item.status === "fulfilled").length, 1);
+    room = await data(db, "rooms", roomId); const match = await data(db, "rooms", roomId, "matches", room.currentMatchId); assert.deepEqual(new Set([match.playerX, match.playerO]), new Set([host.uid, third.uid]));
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
+});
 
-    let current = await guest.probe(roomId);
-    assert.equal(current.match.board.every(cell => cell === null), true);
-    await host.move(roomId, current.currentMatchId, 0);
-    current = await guest.probe(roomId);
-    assert.equal(current.match.board[0], "X");
-    assert.equal(current.match.currentTurn, "O");
+test("member resumes and probe restores match, series, roles and suggestions", async () => {
+  const { services, apis } = await identities(3, "resume-series"); const [host, guest, spectator] = apis;
+  try {
+    const roomId = await host.create("RSM31"); await guest.join("RSM31"); await spectator.join("RSM31"); await spectator.setRole(roomId, spectator.uid, "spectator"); await host.start(roomId);
+    let probe = await spectator.probe(roomId); await spectator.suggest(roomId, probe.currentMatchId, 8); probe = await spectator.probe(roomId);
+    assert.equal(await spectator.resume(roomId), roomId); assert.equal(probe.series.targetWins, 2); assert.equal(probe.players.find(item => item.playerId === spectator.uid).role, "spectator"); assert.equal(probe.suggestions[0].suggestedCell, 8);
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
+});
 
-    const outsider = (await identities(1, "resume-outsider"));
-    try { await assert.rejects(() => outsider.apis[0].resume(roomId), /no longer a member/); }
-    finally { await Promise.all(outsider.services.map(service => deleteApp(service.app))); }
-  } finally {
-    await Promise.all(services.map(service => deleteApp(service.app)));
-  }
+test("short-code collisions retry finitely and exhaustion is recoverable", async () => {
+  const { services, apis } = await identities(1, "code-collision"); const [host] = apis;
+  try {
+    await host.create("COLL2"); let calls = 0;
+    const roomId = await host.create(null, 2, () => ++calls === 1 ? "COLL2" : "FRESH");
+    assert.ok(roomId); assert.equal(calls, 2);
+    await assert.rejects(() => host.create(null, 2, () => "COLL2"), /Please try again/);
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });

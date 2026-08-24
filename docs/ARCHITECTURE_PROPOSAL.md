@@ -173,3 +173,16 @@ roomCodes/{roomCode}
 3. 编写并用 Firebase Emulator 验证 Firestore Rules 与多客户端流程。
 4. 在进行任何远程操作前，再次列出目标；经明确确认后才重新登录 GitHub、创建公开仓库并推送开发分支。
 5. Firebase 项目创建、生产 Rules/Indexes 部署、GitHub Pages 和合并 `main` 均分别等待确认。
+# Series, Lobby Roles, and Suggestions (schema v3)
+
+The Firebase multiplayer model layers a bounded series over individual Tic-Tac-Toe matches:
+
+- `rooms/{roomId}` stores `currentSeriesId`, `currentMatchId`, global round/series counters, member totals, and Lobby-locked settings (`seriesTargetWins`, `maxSeriesRounds`, `maxActivePlayers`).
+- `rooms/{roomId}/series/{seriesId}` stores the fixed pair, wins keyed by UID, rounds played, target/max rounds, status, winner, and pairing rotation index.
+- `rooms/{roomId}/matches/{matchId}` retains the authoritative board and score idempotency fields and adds `seriesId`, `seriesRoundNumber`, and the move-count value for suggestion muting.
+- Player documents retain stable `seat` and Party Score while adding `role` and `roleUpdatedAt`. Missing legacy roles are interpreted as `player`.
+- `rooms/{roomId}/matches/{matchId}/suggestions/{spectatorUid}` provides one replaceable structured suggestion per spectator and turn. It is never consulted as authorization for a formal move.
+
+All series creation, round settlement, Party Score updates, role changes, and suggestion resolution use Firestore transactions. Security Rules independently validate membership, host/current-player authority, score idempotency, role locks, empty suggested cells, and move-count freshness. Lobby practice remains entirely local while the room listeners stay active.
+
+New room codes use five characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`. Normalization removes whitespace and hyphens and uppercases input; reads continue to accept legacy five-character alphanumeric mappings. A room-code mapping is an expiring join locator, not an authentication secret.

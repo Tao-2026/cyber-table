@@ -113,7 +113,7 @@ const backend = selectBackend({
   hostname: location.hostname
 });
 if (backend === "emulator" || backend === "firebase") {
-  const { mountFirebaseApp } = await import("./emulator-app.js?v=round-lifecycle-20260817");
+  const { mountFirebaseApp } = await import("./emulator-app.js?v=series-spectators-20260824");
   const options = backend === "emulator"
     ? { emulator: true }
     : { emulator: false, config: (await import("./config/firebase-config.js")).firebaseConfig };

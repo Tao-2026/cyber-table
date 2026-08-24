@@ -5,6 +5,7 @@ service cloud.firestore {
     function roomPath(roomId) { return /databases/$(database)/documents/rooms/$(roomId); }
     function matchPath(roomId, matchId) { return /databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId); }
     function playerPath(roomId, playerId) { return /databases/$(database)/documents/rooms/$(roomId)/players/$(playerId); }
+    function seriesPath(roomId, seriesId) { return /databases/$(database)/documents/rooms/$(roomId)/series/$(seriesId); }
     function room(roomId) { return get(roomPath(roomId)); }
     function isMember(roomId) { return signedIn() && room(roomId).data.memberIds.hasAny([request.auth.uid]); }
     function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
@@ -54,60 +55,104 @@ service cloud.firestore {
       return scoreDelta(roomId, beforeMatch.playerX, beforeMatch, afterMatch)
         && scoreDelta(roomId, beforeMatch.playerO, beforeMatch, afterMatch);
     }
+    function validSeriesSettlement(roomId, beforeSeries, afterSeries) {
+      let beforeMatch = get(matchPath(roomId, room(roomId).data.currentMatchId)).data;
+      let afterMatch = getAfter(matchPath(roomId, room(roomId).data.currentMatchId)).data;
+      let winningId = afterMatch.status == 'won' ? (afterMatch.winner == 'X' ? beforeMatch.playerX : beforeMatch.playerO) : null;
+      return afterSeries.winsByPlayer[beforeSeries.playerA] == beforeSeries.winsByPlayer[beforeSeries.playerA] + (winningId == beforeSeries.playerA ? 1 : 0)
+        && afterSeries.winsByPlayer[beforeSeries.playerB] == beforeSeries.winsByPlayer[beforeSeries.playerB] + (winningId == beforeSeries.playerB ? 1 : 0);
+    }
+    function validSeriesResult(series) {
+      return (series.status == 'playing' && series.winnerId == null && series.roundsPlayed < series.maxRounds
+          && series.winsByPlayer[series.playerA] < series.targetWins && series.winsByPlayer[series.playerB] < series.targetWins)
+        || (series.status == 'won' && series.winnerId in [series.playerA, series.playerB]
+          && (series.winsByPlayer[series.winnerId] >= series.targetWins
+            || (series.roundsPlayed == series.maxRounds
+              && series.winsByPlayer[series.winnerId] > series.winsByPlayer[series.winnerId == series.playerA ? series.playerB : series.playerA])))
+        || (series.status == 'draw' && series.winnerId == null && series.roundsPlayed == series.maxRounds
+          && series.winsByPlayer[series.playerA] == series.winsByPlayer[series.playerB]);
+    }
 
     match /rooms/{roomId} {
       allow get: if signedIn();
       allow list, delete: if false;
       allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','roundNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','usedEmojis'])
+        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','currentSeriesId','roundNumber','seriesNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','activePlayerCount','usedEmojis'])
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.roomCode is string && request.resource.data.roomCode.size() == 5
-        && request.resource.data.status == 'lobby' && request.resource.data.currentMatchId == null && request.resource.data.roundNumber == -1
-        && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.memberCount == 1
+        && request.resource.data.status == 'lobby' && request.resource.data.currentMatchId == null && request.resource.data.currentSeriesId == null && request.resource.data.roundNumber == -1 && request.resource.data.seriesNumber == -1
+        && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.memberCount == 1 && request.resource.data.activePlayerCount == 1
         && request.resource.data.usedEmojis is list && request.resource.data.usedEmojis.size() == 1
         && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt)
         && request.resource.data.expiresAt is timestamp && request.resource.data.expiresAt > request.time
-        && request.resource.data.settings.maxPlayers is int && request.resource.data.settings.maxPlayers >= 2 && request.resource.data.settings.maxPlayers <= 8;
+        && request.resource.data.settings.maxPlayers is int && request.resource.data.settings.maxPlayers >= 2 && request.resource.data.settings.maxPlayers <= 8
+        && request.resource.data.settings.maxActivePlayers is int && request.resource.data.settings.maxActivePlayers >= 2 && request.resource.data.settings.maxActivePlayers <= 8
+        && request.resource.data.settings.seriesTargetWins in [1,2,3]
+        && request.resource.data.settings.maxSeriesRounds in [1,5,9];
       allow update: if (
           signedIn() && resource.data.status == 'playing' && resource.data.currentMatchId != null
           && request.auth.uid == (get(matchPath(roomId, resource.data.currentMatchId)).data.currentTurn == 'X'
             ? get(matchPath(roomId, resource.data.currentMatchId)).data.playerX
             : get(matchPath(roomId, resource.data.currentMatchId)).data.playerO)
           && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt'])
-          && request.resource.data.status == 'roundOver'
+          && request.resource.data.status in ['roundOver','seriesOver']
           && getAfter(matchPath(roomId, resource.data.currentMatchId)).data.status in ['won','draw']
           && getAfter(matchPath(roomId, resource.data.currentMatchId)).data.scoreApplied == true
+          && ((!resource.data.keys().hasAny(['currentSeriesId']) && request.resource.data.status == 'roundOver')
+            || (resource.data.keys().hasAny(['currentSeriesId'])
+              && ((request.resource.data.status == 'roundOver' && getAfter(seriesPath(roomId, resource.data.currentSeriesId)).data.status == 'playing')
+                || (request.resource.data.status == 'seriesOver' && getAfter(seriesPath(roomId, resource.data.currentSeriesId)).data.status in ['won','draw']))))
           && validServerTime(request.resource.data.updatedAt)
         ) || (
           isHost(roomId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','roundNumber','updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','currentSeriesId','roundNumber','seriesNumber','updatedAt'])
           && validServerTime(request.resource.data.updatedAt)
           && (
             (resource.data.status == 'lobby' && request.resource.data.status == 'playing'
-              && request.resource.data.roundNumber == 0 && request.resource.data.currentMatchId != null)
+              && request.resource.data.roundNumber == 0 && request.resource.data.seriesNumber == 0 && request.resource.data.currentMatchId != null && request.resource.data.currentSeriesId != null)
             || (resource.data.status == 'roundOver' && request.resource.data.status == 'playing'
-              && request.resource.data.roundNumber == resource.data.roundNumber + 1
-              && request.resource.data.currentMatchId != resource.data.currentMatchId)
-            || (resource.data.status == 'roundOver' && request.resource.data.status == 'partyOver'
+              && request.resource.data.roundNumber == resource.data.roundNumber + 1 && request.resource.data.currentSeriesId == resource.data.currentSeriesId
+              && request.resource.data.currentMatchId != resource.data.currentMatchId && request.resource.data.seriesNumber == resource.data.seriesNumber)
+            || (resource.data.status == 'roundOver' && !resource.data.keys().hasAny(['currentSeriesId']) && request.resource.data.status == 'playing'
+              && request.resource.data.roundNumber == resource.data.roundNumber + 1 && request.resource.data.currentSeriesId != null
+              && request.resource.data.currentMatchId != resource.data.currentMatchId && request.resource.data.seriesNumber == 0)
+            || (resource.data.status == 'seriesOver' && request.resource.data.status == 'playing'
+              && request.resource.data.roundNumber == resource.data.roundNumber + 1 && request.resource.data.currentSeriesId != resource.data.currentSeriesId
+              && request.resource.data.currentMatchId != resource.data.currentMatchId && request.resource.data.seriesNumber == resource.data.seriesNumber + 1)
+            || (resource.data.status == 'seriesOver' && request.resource.data.status == 'partyOver'
               && request.resource.data.roundNumber == resource.data.roundNumber
-              && request.resource.data.currentMatchId == resource.data.currentMatchId)
+              && request.resource.data.currentMatchId == resource.data.currentMatchId && request.resource.data.currentSeriesId == resource.data.currentSeriesId)
           )
+        ) || (
+          isHost(roomId) && resource.data.status == 'lobby' && request.resource.data.status == 'lobby'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['settings','updatedAt'])
+          && request.resource.data.settings.diff(resource.data.settings).affectedKeys().hasOnly(['seriesTargetWins','maxSeriesRounds'])
+          && request.resource.data.settings.seriesTargetWins in [1,2,3]
+          && request.resource.data.settings.maxSeriesRounds == (request.resource.data.settings.seriesTargetWins == 1 ? 1 : request.resource.data.settings.seriesTargetWins == 2 ? 5 : 9)
+          && validServerTime(request.resource.data.updatedAt)
         ) || (
           signedIn() && resource.data.status == 'lobby'
           && !resource.data.memberIds.hasAny([request.auth.uid])
           && resource.data.memberCount < resource.data.settings.maxPlayers
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds','memberCount','usedEmojis','updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberIds','memberCount','activePlayerCount','usedEmojis','updatedAt'])
           && request.resource.data.memberIds == resource.data.memberIds.concat([request.auth.uid])
           && request.resource.data.memberCount == resource.data.memberCount + 1
+          && request.resource.data.activePlayerCount >= resource.data.activePlayerCount && request.resource.data.activePlayerCount <= resource.data.activePlayerCount + 1
           && request.resource.data.usedEmojis.size() == resource.data.usedEmojis.size() + 1
           && request.resource.data.usedEmojis.toSet().size() == request.resource.data.usedEmojis.size()
+          && validServerTime(request.resource.data.updatedAt)
+        ) || (
+          isMember(roomId) && resource.data.status == 'lobby'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['activePlayerCount','updatedAt'])
+          && (request.resource.data.activePlayerCount == resource.data.activePlayerCount + 1 || request.resource.data.activePlayerCount == resource.data.activePlayerCount - 1 || request.resource.data.activePlayerCount == resource.data.activePlayerCount)
+          && request.resource.data.activePlayerCount >= 0 && request.resource.data.activePlayerCount <= resource.data.settings.maxActivePlayers
           && validServerTime(request.resource.data.updatedAt)
         );
 
       match /players/{playerId} {
         allow read: if isMember(roomId);
         allow create: if signedIn() && playerId == request.auth.uid
-          && request.resource.data.keys().hasOnly(['playerId','emoji','seat','partyScore','joinedAt','lastSeenAt','status'])
+          && request.resource.data.keys().hasOnly(['playerId','emoji','seat','role','partyScore','joinedAt','lastSeenAt','roleUpdatedAt','status'])
           && request.resource.data.playerId == request.auth.uid
           && getAfter(roomPath(roomId)).data.memberIds.hasAny([request.auth.uid])
           && request.resource.data.seat == getAfter(roomPath(roomId)).data.memberCount - 1
@@ -115,13 +160,20 @@ service cloud.firestore {
           && request.resource.data.emoji is string && request.resource.data.emoji.size() <= 8
           && request.resource.data.seat is int && request.resource.data.seat >= 0 && request.resource.data.seat < 8
           && request.resource.data.partyScore == 0
-          && validServerTime(request.resource.data.joinedAt) && validServerTime(request.resource.data.lastSeenAt)
+          && request.resource.data.role in ['player','spectator']
+          && validServerTime(request.resource.data.joinedAt) && validServerTime(request.resource.data.lastSeenAt) && validServerTime(request.resource.data.roleUpdatedAt)
           && request.resource.data.status in ['active','away'];
         allow update: if (
             signedIn() && playerId == request.auth.uid
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['lastSeenAt','status'])
             && validServerTime(request.resource.data.lastSeenAt)
             && request.resource.data.status in ['active','away']
+          ) || (
+            signedIn() && resource.data.playerId == playerId && room(roomId).data.status == 'lobby'
+            && (request.auth.uid == playerId || isHost(roomId))
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['role','roleUpdatedAt','lastSeenAt'])
+            && request.resource.data.role in ['player','spectator']
+            && validServerTime(request.resource.data.roleUpdatedAt) && validServerTime(request.resource.data.lastSeenAt)
           ) || (
             isMember(roomId)
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['partyScore'])
@@ -138,14 +190,15 @@ service cloud.firestore {
       match /matches/{matchId} {
         allow read: if isMember(roomId);
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','createdAt','updatedAt'])
+          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','createdAt','updatedAt'])
           && request.resource.data.gameType == 'tic-tac-toe' && validBoard(request.resource.data.board)
           && request.resource.data.playerX != request.resource.data.playerO
           && room(roomId).data.memberIds.hasAny([request.resource.data.playerX])
           && room(roomId).data.memberIds.hasAny([request.resource.data.playerO])
           && request.resource.data.moveCount == 0 && request.resource.data.currentTurn == 'X'
           && request.resource.data.status == 'playing' && request.resource.data.winner == null
-          && request.resource.data.winningLine.size() == 0 && request.resource.data.scoreApplied == false
+          && request.resource.data.winningLine.size() == 0 && request.resource.data.scoreApplied == false && request.resource.data.suggestionsMutedMoveCount == -1
+          && request.resource.data.seriesId == getAfter(roomPath(roomId)).data.currentSeriesId
           && getAfter(roomPath(roomId)).data.currentMatchId == matchId
           && getAfter(roomPath(roomId)).data.status == 'playing'
           && getAfter(roomPath(roomId)).data.roundNumber == request.resource.data.roundNumber
@@ -162,8 +215,59 @@ service cloud.firestore {
           && (request.resource.data.status == 'playing'
             ? request.resource.data.currentTurn != resource.data.currentTurn && request.resource.data.scoreApplied == false
             : request.resource.data.currentTurn == resource.data.currentTurn && request.resource.data.scoreApplied == true
-              && getAfter(roomPath(roomId)).data.status == 'roundOver'
+              && getAfter(roomPath(roomId)).data.status in ['roundOver','seriesOver']
               && validScoreSettlement(roomId, resource.data, request.resource.data))
+          && validServerTime(request.resource.data.updatedAt);
+        allow update: if isMember(roomId)
+          && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+          && resource.data.status == 'playing'
+          && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['suggestionsMutedMoveCount','updatedAt'])
+          && request.resource.data.suggestionsMutedMoveCount == resource.data.moveCount
+          && validServerTime(request.resource.data.updatedAt);
+        allow delete: if false;
+
+        match /suggestions/{spectatorId} {
+          allow read: if isMember(roomId);
+          allow create, update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && (
+              request.auth.uid == spectatorId
+              && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
+              && request.resource.data.spectatorId == request.auth.uid
+              && request.resource.data.suggestedCell is int && request.resource.data.suggestedCell >= 0 && request.resource.data.suggestedCell <= 8
+              && request.resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount
+              && get(matchPath(roomId, matchId)).data.board[request.resource.data.suggestedCell] == null
+              && request.resource.data.status == 'pending'
+              && request.resource.data.resolvedAt == null && request.resource.data.resolvedBy == null
+            ) || (
+              request.auth.uid == (get(matchPath(roomId, matchId)).data.currentTurn == 'X' ? get(matchPath(roomId, matchId)).data.playerX : get(matchPath(roomId, matchId)).data.playerO)
+              && resource.data.status == 'pending' && resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','resolvedAt','resolvedBy'])
+              && request.resource.data.status in ['accepted','dismissed'] && request.resource.data.resolvedBy == request.auth.uid
+              && validServerTime(request.resource.data.resolvedAt)
+            );
+          allow delete: if false;
+        }
+      }
+
+      match /series/{seriesId} {
+        allow read: if isMember(roomId);
+        allow create: if isHost(roomId)
+          && request.resource.data.keys().hasOnly(['playerA','playerB','winsByPlayer','roundsPlayed','targetWins','maxRounds','status','winnerId','pairingRoundNumber','createdAt','updatedAt'])
+          && request.resource.data.playerA != request.resource.data.playerB
+          && (!get(playerPath(roomId, request.resource.data.playerA)).data.keys().hasAny(['role']) || get(playerPath(roomId, request.resource.data.playerA)).data.role == 'player')
+          && (!get(playerPath(roomId, request.resource.data.playerB)).data.keys().hasAny(['role']) || get(playerPath(roomId, request.resource.data.playerB)).data.role == 'player')
+          && request.resource.data.targetWins in [1,2,3] && request.resource.data.maxRounds in [1,5,9]
+          && request.resource.data.roundsPlayed == 0 && request.resource.data.status == 'playing' && request.resource.data.winnerId == null
+          && request.resource.data.winsByPlayer[request.resource.data.playerA] == 0 && request.resource.data.winsByPlayer[request.resource.data.playerB] == 0
+          && getAfter(roomPath(roomId)).data.currentSeriesId == seriesId
+          && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt);
+        allow update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentSeriesId == seriesId
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['winsByPlayer','roundsPlayed','status','winnerId','updatedAt'])
+          && request.resource.data.roundsPlayed == resource.data.roundsPlayed + 1
+          && request.resource.data.status in ['playing','won','draw']
+          && validSeriesSettlement(roomId, resource.data, request.resource.data)
+          && validSeriesResult(request.resource.data)
           && validServerTime(request.resource.data.updatedAt);
         allow delete: if false;
       }
