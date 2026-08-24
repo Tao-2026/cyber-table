@@ -196,7 +196,7 @@ service cloud.firestore {
       match /matches/{matchId} {
         allow read: if isMember(roomId);
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','createdAt','updatedAt'])
+          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','approvedSpectatorId','approvedSuggestionMoveCount','createdAt','updatedAt'])
           && request.resource.data.gameType == 'tic-tac-toe' && validBoard(request.resource.data.board)
           && request.resource.data.playerX != request.resource.data.playerO
           && room(roomId).data.memberIds.hasAny([request.resource.data.playerX])
@@ -204,6 +204,7 @@ service cloud.firestore {
           && request.resource.data.moveCount == 0 && request.resource.data.currentTurn == 'X'
           && request.resource.data.status == 'playing' && request.resource.data.winner == null
           && request.resource.data.winningLine.size() == 0 && request.resource.data.scoreApplied == false && request.resource.data.suggestionsMutedMoveCount == -1
+          && request.resource.data.approvedSpectatorId == null && request.resource.data.approvedSuggestionMoveCount == -1
           && request.resource.data.seriesId == getAfter(roomPath(roomId)).data.currentSeriesId
           && getAfter(roomPath(roomId)).data.currentMatchId == matchId
           && getAfter(roomPath(roomId)).data.status == 'playing'
@@ -216,6 +217,14 @@ service cloud.firestore {
             && getAfter(roomPath(roomId)).data.status in ['roundOver','seriesBreak']
             && validScoreSettlement(roomId, resource.data, request.resource.data)
             && validServerTime(request.resource.data.updatedAt)
+          ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['approvedSpectatorId','approvedSuggestionMoveCount']) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['board']) ? (
+            isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && resource.data.status == 'playing' && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvedSpectatorId','approvedSuggestionMoveCount','updatedAt'])
+            && resource.data.approvedSuggestionMoveCount != resource.data.moveCount
+            && request.resource.data.approvedSuggestionMoveCount == resource.data.moveCount
+            && getAfter(/databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/suggestions/$(request.resource.data.approvedSpectatorId)).data.status == 'approved'
+            && validServerTime(request.resource.data.updatedAt)
           ) : request.resource.data.diff(resource.data).affectedKeys().hasOnly(['suggestionsMutedMoveCount','updatedAt']) ? (
             isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
             && resource.data.status == 'playing'
@@ -227,9 +236,11 @@ service cloud.firestore {
             && resource.data.status == 'playing' && resource.data.scoreApplied == false && request.resource.data.scoreApplied == false
             && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
             && (!get(playerPath(roomId, request.auth.uid)).data.keys().hasAny(['role']) || get(playerPath(roomId, request.auth.uid)).data.role == 'player')
-            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','winningLine','moveCount','updatedAt'])
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['board','currentTurn','status','winner','winningLine','moveCount','approvedSpectatorId','approvedSuggestionMoveCount','updatedAt'])
             && validBoard(request.resource.data.board) && validMoveBoard(resource.data.board, request.resource.data.board, resource.data.currentTurn)
             && request.resource.data.moveCount == resource.data.moveCount + 1 && validResult(request.resource.data)
+            && (!request.resource.data.keys().hasAny(['approvedSpectatorId','approvedSuggestionMoveCount'])
+              || (request.resource.data.approvedSpectatorId == null && request.resource.data.approvedSuggestionMoveCount == -1))
             && (request.resource.data.status == 'playing' ? request.resource.data.currentTurn != resource.data.currentTurn : request.resource.data.currentTurn == resource.data.currentTurn)
             && validServerTime(request.resource.data.updatedAt)
           );
@@ -237,23 +248,43 @@ service cloud.firestore {
 
         match /suggestions/{spectatorId} {
           allow read: if isMember(roomId);
-          allow create, update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
-            && (
-              request.auth.uid == spectatorId
-              && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
-              && request.resource.data.spectatorId == request.auth.uid
-              && request.resource.data.suggestedCell is int && request.resource.data.suggestedCell >= 0 && request.resource.data.suggestedCell <= 8
-              && request.resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount
-              && get(matchPath(roomId, matchId)).data.board[request.resource.data.suggestedCell] == null
-              && request.resource.data.status == 'pending'
-              && request.resource.data.resolvedAt == null && request.resource.data.resolvedBy == null
+          allow create: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
+            && get(matchPath(roomId, matchId)).data.status == 'playing'
+            && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
+            && request.resource.data.roomId == roomId && request.resource.data.seriesId == room(roomId).data.currentSeriesId && request.resource.data.matchId == matchId
+            && request.resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount && request.resource.data.spectatorId == request.auth.uid
+            && request.resource.data.status == 'raised' && request.resource.data.suggestedCell == null && request.resource.data.approvedBy == null
+            && request.resource.data.approvedAt == null && request.resource.data.suggestedAt == null && validServerTime(request.resource.data.createdAt);
+          allow update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && get(matchPath(roomId, matchId)).data.status == 'playing'
+            && request.resource.data.matchId == matchId && request.resource.data.seriesId == room(roomId).data.currentSeriesId
+            && request.resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount
+            && ((
+              request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
+              && resource.data.moveCount < request.resource.data.moveCount && request.resource.data.status == 'raised'
+              && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
+              && request.resource.data.roomId == roomId && request.resource.data.spectatorId == request.auth.uid
+              && request.resource.data.suggestedCell == null && request.resource.data.approvedBy == null && request.resource.data.approvedAt == null && request.resource.data.suggestedAt == null
+              && validServerTime(request.resource.data.createdAt)
             ) || (
-              request.auth.uid == (get(matchPath(roomId, matchId)).data.currentTurn == 'X' ? get(matchPath(roomId, matchId)).data.playerX : get(matchPath(roomId, matchId)).data.playerO)
-              && resource.data.status == 'pending' && resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount
-              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','resolvedAt','resolvedBy'])
-              && request.resource.data.status in ['accepted','dismissed'] && request.resource.data.resolvedBy == request.auth.uid
-              && validServerTime(request.resource.data.resolvedAt)
-            );
+              resource.data.status == 'raised'
+              && request.auth.uid == (get(matchPath(roomId, matchId)).data.currentTurn == 'X' ? get(matchPath(roomId, matchId)).data.playerX : get(matchPath(roomId, matchId)).data.playerO)
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','approvedBy','approvedAt'])
+              && ((request.resource.data.status == 'approved' && request.resource.data.approvedBy == request.auth.uid && validServerTime(request.resource.data.approvedAt)
+                  && getAfter(matchPath(roomId, matchId)).data.approvedSpectatorId == spectatorId && getAfter(matchPath(roomId, matchId)).data.approvedSuggestionMoveCount == resource.data.moveCount)
+                || (request.resource.data.status == 'dismissed' && request.resource.data.approvedBy == null && request.resource.data.approvedAt == null))
+            ) || (
+              request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
+              && resource.data.status == 'approved' && resource.data.approvedBy != null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','suggestedCell','suggestedAt'])
+              && request.resource.data.status == 'suggested' && request.resource.data.suggestedCell is int
+              && request.resource.data.suggestedCell >= 0 && request.resource.data.suggestedCell <= 8
+              && get(matchPath(roomId, matchId)).data.board[request.resource.data.suggestedCell] == null
+              && get(matchPath(roomId, matchId)).data.approvedSpectatorId == spectatorId
+              && get(matchPath(roomId, matchId)).data.approvedSuggestionMoveCount == resource.data.moveCount
+              && validServerTime(request.resource.data.suggestedAt)
+            ));
           allow delete: if false;
         }
       }

@@ -6,7 +6,6 @@ import { generateShortRoomCode, normalizeRoomCode } from "../core/room-code.js";
 import { createSeries, presetForTarget, settleSeriesRound } from "../core/series.js";
 
 export function createFirebaseRoomService({ db, uid }) {
-  const lastSuggestionAt = new Map();
   const roomRef = roomId => doc(db, "rooms", roomId);
   const playersRef = roomId => collection(db, "rooms", roomId, "players");
   const playerRef = (roomId, playerId) => doc(db, "rooms", roomId, "players", playerId);
@@ -231,7 +230,7 @@ export function createFirebaseRoomService({ db, uid }) {
       const expected = current.currentTurn === "X" ? current.playerX : current.playerO;
       if (expected !== uid) throw new Error("Not your turn");
       const next = makeMove(current, index); terminal = next.status !== "playing";
-      tx.update(ref, { board: next.board, currentTurn: next.currentTurn, status: next.status, winner: next.winner, winningLine: next.winningLine || [], moveCount: next.moveCount, updatedAt: serverTimestamp() });
+      tx.update(ref, { board: next.board, currentTurn: next.currentTurn, status: next.status, winner: next.winner, winningLine: next.winningLine || [], moveCount: next.moveCount, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, updatedAt: serverTimestamp() });
     });
     if (!terminal) return;
     await runTransaction(db, async tx => {
@@ -257,29 +256,40 @@ export function createFirebaseRoomService({ db, uid }) {
     });
   }
 
-  async function suggest(roomId, matchId, suggestedCell) {
-    const rateKey = `${roomId}:${matchId}`; const now = Date.now();
-    if (now - (lastSuggestionAt.get(rateKey) || 0) < 500) throw new Error("Please wait before changing your suggestion");
+  async function raiseHand(roomId, matchId) {
     await runTransaction(db, async tx => {
       const room = (await tx.get(roomRef(roomId))).data(); const match = (await tx.get(matchRef(roomId, matchId))).data();
       const spectator = (await tx.get(playerRef(roomId, uid))).data();
       if (!room || room.status !== "playing" || room.currentMatchId !== matchId) throw new Error("No active match");
       if ((spectator?.role || "player") !== "spectator") throw new Error("Spectators only");
-      if (!Number.isInteger(suggestedCell) || suggestedCell < 0 || suggestedCell > 8 || match.board[suggestedCell] !== null) throw new Error("Choose an empty square");
-      tx.set(suggestionRef(roomId, matchId, uid), { spectatorId: uid, spectatorEmoji: spectator.emoji, suggestedCell, moveCount: match.moveCount, status: "pending", createdAt: serverTimestamp(), resolvedAt: null, resolvedBy: null });
+      const ref = suggestionRef(roomId, matchId, uid); const prior = (await tx.get(ref)).data();
+      if (prior?.moveCount === match.moveCount) throw new Error("Hand already handled this turn");
+      tx.set(ref, { roomId, seriesId: room.currentSeriesId, matchId, moveCount: match.moveCount, spectatorId: uid, spectatorEmoji: spectator.emoji, spectatorName: `Player ${spectator.seat + 1}`, status: "raised", suggestedCell: null, approvedBy: null, createdAt: serverTimestamp(), approvedAt: null, suggestedAt: null });
     });
-    lastSuggestionAt.set(rateKey, now);
   }
 
-  async function resolveSuggestion(roomId, matchId, spectatorId, status) {
-    if (!["accepted", "dismissed"].includes(status)) throw new Error("Invalid resolution");
+  async function reviewHand(roomId, matchId, spectatorId, decision) {
+    if (!["approved", "dismissed"].includes(decision)) throw new Error("Invalid hand decision");
     await runTransaction(db, async tx => {
-      const match = (await tx.get(matchRef(roomId, matchId))).data();
+      const matchDocument = matchRef(roomId, matchId); const match = (await tx.get(matchDocument)).data();
       const expected = match.currentTurn === "X" ? match.playerX : match.playerO;
       if (expected !== uid || match.status !== "playing") throw new Error("Current player only");
       const ref = suggestionRef(roomId, matchId, spectatorId); const suggestion = (await tx.get(ref)).data();
-      if (!suggestion || suggestion.status !== "pending" || suggestion.moveCount !== match.moveCount) throw new Error("Suggestion expired");
-      tx.update(ref, { status, resolvedAt: serverTimestamp(), resolvedBy: uid });
+      if (!suggestion || suggestion.status !== "raised" || suggestion.moveCount !== match.moveCount) throw new Error("Hand request expired");
+      if (decision === "approved" && match.approvedSuggestionMoveCount === match.moveCount) throw new Error("Another spectator is already approved");
+      tx.update(ref, { status: decision, approvedBy: decision === "approved" ? uid : null, approvedAt: decision === "approved" ? serverTimestamp() : null });
+      if (decision === "approved") tx.update(matchDocument, { approvedSpectatorId: spectatorId, approvedSuggestionMoveCount: match.moveCount, updatedAt: serverTimestamp() });
+    });
+  }
+
+  async function suggestCell(roomId, matchId, suggestedCell) {
+    await runTransaction(db, async tx => {
+      const room = (await tx.get(roomRef(roomId))).data(); const match = (await tx.get(matchRef(roomId, matchId))).data();
+      const ref = suggestionRef(roomId, matchId, uid); const suggestion = (await tx.get(ref)).data();
+      if (!room || room.status !== "playing" || room.currentMatchId !== matchId || match.status !== "playing") throw new Error("No active match");
+      if (!suggestion || suggestion.status !== "approved" || suggestion.moveCount !== match.moveCount || match.approvedSpectatorId !== uid || match.approvedSuggestionMoveCount !== match.moveCount) throw new Error("Wait for the current player to approve your hand");
+      if (!Number.isInteger(suggestedCell) || suggestedCell < 0 || suggestedCell > 8 || match.board[suggestedCell] !== null) throw new Error("Choose an empty square");
+      tx.update(ref, { status: "suggested", suggestedCell, suggestedAt: serverTimestamp() });
     });
   }
 
@@ -301,12 +311,12 @@ export function createFirebaseRoomService({ db, uid }) {
     });
   }
 
-  return Object.freeze({ uid, create, join, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, requestRole, suggest, resolveSuggestion, muteSuggestions, endParty });
+  return Object.freeze({ uid, create, join, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, requestRole, raiseHand, reviewHand, suggestCell, muteSuggestions, endParty });
 }
 
 function matchData(playerX, playerO, roundNumber, seriesId, seriesRoundNumber) {
   const game = createGame();
-  return { gameType: "tic-tac-toe", playerX, playerO, board: game.board, currentTurn: game.currentTurn, status: game.status, winner: game.winner, winningLine: [], moveCount: game.moveCount, scoreApplied: false, roundNumber, seriesId, seriesRoundNumber, suggestionsMutedMoveCount: -1, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+  return { gameType: "tic-tac-toe", playerX, playerO, board: game.board, currentTurn: game.currentTurn, status: game.status, winner: game.winner, winningLine: [], moveCount: game.moveCount, scoreApplied: false, roundNumber, seriesId, seriesRoundNumber, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
 }
 
 function playerData(uid, emoji, seat, role, joinedDuringSeries = false) {

@@ -29,6 +29,11 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Fixed
 
+- Make spectator hand raises visible to the current player in real time, with an ordered queue and explicit allow-or-dismiss controls.
+- Let only an approved spectator select one legal suggestion square through a dedicated suggestion action, separate from formal board moves.
+- Split hand raising, current-player approval, one-cell suggestion, and the current player's formal move into distinct Firestore-backed states; suggestions never place a mark automatically.
+- Clear raised, approved, and submitted suggestion UI immediately when the turn's move count changes, while rejecting stale writes in Security Rules.
+- Keep the public five-character room code and a spectator invite link visible throughout play, round-over, and series-break screens without exposing the Firebase room document ID.
 - Wait for Firebase anonymous-auth persistence to finish before considering a new anonymous sign-in, preventing refreshes from replacing a player's UID during an active party.
 - Restore the remembered room automatically after a refresh without requiring both players to leave and join again.
 - Rebuild Firestore room, player, and match listeners when connectivity returns or a phone tab becomes visible after being in the background.

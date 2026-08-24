@@ -20,7 +20,7 @@ async function seedRoom({ board = Array(9).fill(null), currentTurn = "X", moveCo
     await setDoc(doc(db, "rooms/ROOM1"), { hostId: "host", roomCode: "ABCDE", status: "playing", currentMatchId: "M1", currentSeriesId: "S1", roundNumber: 0, seriesNumber: 0, memberIds: ["host","guest","watcher"], memberCount: 3, playerCount: 2, spectatorCount: 1, activePlayerCount: 2, usedEmojis: ["🤖","🐼","🐰"], settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, seriesTargetWins: 2, maxSeriesRounds: 5 }, updatedAt: new Date() });
     for (const [id, seat] of [["host",0],["guest",1],["watcher",2]]) await setDoc(doc(db, `rooms/ROOM1/players/${id}`), { playerId: id, emoji: ["🤖","🐼","🐰"][seat], seat, role: id === "watcher" ? "spectator" : "player", requestedRole: null, joinedDuringSeries: id === "watcher", partyScore: 0, status: "active" });
     await setDoc(doc(db, "rooms/ROOM1/series/S1"), { playerA: "host", playerB: "guest", winsByPlayer: { host: 0, guest: 0 }, roundsPlayed: 0, targetWins: 2, maxRounds: 5, status: "playing", winnerId: null, pairingRoundNumber: 0, createdAt: new Date(), updatedAt: new Date() });
-    await setDoc(doc(db, "rooms/ROOM1/matches/M1"), { gameType: "tic-tac-toe", playerX: "host", playerO: "guest", board, currentTurn, status: "playing", winner: null, winningLine: [], moveCount, scoreApplied: false, roundNumber: 0, seriesId: "S1", seriesRoundNumber: 1, suggestionsMutedMoveCount: -1, createdAt: new Date(), updatedAt: new Date() });
+    await setDoc(doc(db, "rooms/ROOM1/matches/M1"), { gameType: "tic-tac-toe", playerX: "host", playerO: "guest", board, currentTurn, status: "playing", winner: null, winningLine: [], moveCount, scoreApplied: false, roundNumber: 0, seriesId: "S1", seriesRoundNumber: 1, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, createdAt: new Date(), updatedAt: new Date() });
   });
 }
 
@@ -98,16 +98,17 @@ test("non-host cannot start next match or end party", async () => {
   await assertFails(updateDoc(doc(db, "rooms/ROOM1"), { status: "playing", currentMatchId: "M2", roundNumber: 1, updatedAt: serverTimestamp() }));
 });
 
-test("spectator suggestions are member-only and current-player controlled", async () => {
-  await seedRoom();
-  const watcherDb = env.authenticatedContext("watcher").firestore();
-  const suggestion = doc(watcherDb, "rooms/ROOM1/matches/M1/suggestions/watcher");
-  await assertSucceeds(setDoc(suggestion, { spectatorId: "watcher", spectatorEmoji: "🐰", suggestedCell: 4, moveCount: 0, status: "pending", createdAt: serverTimestamp(), resolvedAt: null, resolvedBy: null }));
-  await assertFails(getDoc(doc(env.authenticatedContext("outsider").firestore(), "rooms/ROOM1/matches/M1/suggestions/watcher")));
-  await assertFails(setDoc(doc(env.authenticatedContext("guest").firestore(), "rooms/ROOM1/matches/M1/suggestions/guest"), { spectatorId: "guest", spectatorEmoji: "🐼", suggestedCell: 5, moveCount: 0, status: "pending", createdAt: serverTimestamp(), resolvedAt: null, resolvedBy: null }));
-  await assertFails(updateDoc(doc(env.authenticatedContext("guest").firestore(), "rooms/ROOM1/matches/M1/suggestions/watcher"), { status: "accepted", resolvedAt: serverTimestamp(), resolvedBy: "guest" }));
-  await assertSucceeds(updateDoc(doc(env.authenticatedContext("host").firestore(), "rooms/ROOM1/matches/M1/suggestions/watcher"), { status: "accepted", resolvedAt: serverTimestamp(), resolvedBy: "host" }));
-  assert.equal((await getDoc(doc(env.authenticatedContext("host").firestore(), "rooms/ROOM1/matches/M1"))).data().board.every(cell => cell === null), true);
+test("spectator hand state is member-only, current-player approved, and never moves", async () => {
+  await seedRoom(); const hostDb = env.authenticatedContext("host").firestore(); const watcherDb = env.authenticatedContext("watcher").firestore();
+  const host = createFirebaseRoomService({ db: hostDb, uid: "host" }); const guest = createFirebaseRoomService({ db: env.authenticatedContext("guest").firestore(), uid: "guest" }); const watcher = createFirebaseRoomService({ db: watcherDb, uid: "watcher" });
+  await assertSucceeds(watcher.raiseHand("ROOM1", "M1")); const ref = doc(watcherDb, "rooms/ROOM1/matches/M1/suggestions/watcher");
+  assert.equal((await getDoc(ref)).data().status, "raised"); await assertFails(getDoc(doc(env.authenticatedContext("outsider").firestore(), "rooms/ROOM1/matches/M1/suggestions/watcher")));
+  await assert.rejects(() => guest.reviewHand("ROOM1", "M1", "watcher", "approved"), /Current player/); await assert.rejects(() => watcher.suggestCell("ROOM1", "M1", 4), /approve/);
+  await assertSucceeds(host.reviewHand("ROOM1", "M1", "watcher", "approved")); await assertSucceeds(watcher.suggestCell("ROOM1", "M1", 4));
+  assert.equal((await getDoc(ref)).data().status, "suggested"); assert.equal((await getDoc(doc(hostDb, "rooms/ROOM1/matches/M1"))).data().board.every(cell => cell === null), true);
+  await assertSucceeds(host.move("ROOM1", "M1", 0)); await assert.rejects(() => watcher.suggestCell("ROOM1", "M1", 5), /approve/);
+  await assertSucceeds(watcher.raiseHand("ROOM1", "M1")); await assertSucceeds(guest.reviewHand("ROOM1", "M1", "watcher", "approved"));
+  await assert.rejects(() => watcher.suggestCell("ROOM1", "M1", 0), /empty/); await assertSucceeds(watcher.suggestCell("ROOM1", "M1", 1));
 });
 
 test("only current player may mute suggestions for the current move", async () => {

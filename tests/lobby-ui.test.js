@@ -15,14 +15,15 @@ test("lobby exposes series, player and spectator labels without color-only meani
   for (const text of ["SINGLE ROUND", "BEST OF 3", "BEST OF 5", "PLAYERS / 参赛玩家", "SPECTATORS / 观众", "PLAYER", "SPECTATOR", "HOST", "YOU"]) assert.ok(source.includes(text) || source.includes("presetForTarget"));
 });
 
-test("suggestion UI is structured, accessible, and never calls move when accepted", async () => {
+test("hand approval and suggested-cell UI are separate from formal moves", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
   assert.match(source, /RAISE HAND \/ 举手/);
-  assert.match(source, /ACCEPT SUGGESTION/);
-  assert.match(source, /MUTE SUGGESTIONS THIS TURN/);
+  assert.match(source, /ALLOW TO SUGGEST \/ 允许指点/);
+  assert.match(source, /You may suggest one square\. \/ 你现在可以建议一个格子。/);
+  assert.match(source, /data-fb-action="\$\{canSuggest \? "suggest-cell" : "cell"\}"/);
   assert.match(source, /aria-live="polite"/);
-  const acceptBlock = source.match(/if \(name === "suggest-accept"\)[\s\S]*?\n\s*if \(name === "suggest-dismiss"\)/)?.[0] || "";
-  assert.doesNotMatch(acceptBlock, /api\.move/);
+  const suggestBlock = source.match(/if \(name === "suggest-cell"\)[\s\S]*?\n\s*if \(name === "hand-approve"\)/)?.[0] || "";
+  assert.match(suggestBlock, /api\.suggestCell/); assert.doesNotMatch(suggestBlock, /api\.move/);
 });
 
 test("phone layout keeps practice board and controls in normal flow", async () => {
@@ -51,4 +52,11 @@ test("mobile player and spectator sections collapse and do not cover safe areas"
   const source = await readFile("src/emulator-app.js", "utf8"); const css = await readFile("styles/app.css", "utf8");
   assert.match(source, /<details open><summary>PLAYERS/); assert.match(source, /<details open><summary>SPECTATORS/);
   assert.match(css, /env\(safe-area-inset-bottom\)/); assert.match(css, /\.player-list[^}]*max-height/);
+});
+
+test("every match state keeps a public room code and spectator invite", async () => {
+  const source = await readFile("src/emulator-app.js", "utf8"); const css = await readFile("styles/app.css", "utf8");
+  for (const text of ["COPY CODE / 复制房间码", "INVITE SPECTATORS / 邀请观众", "Friends can join as spectators while the game is running.", "比赛进行中，朋友仍可使用房间码加入观战。"] ) assert.ok(source.includes(text));
+  assert.match(source, /searchParams\.set\("role", "spectator"\)/); assert.doesNotMatch(source, /spectatorInviteUrl[\s\S]{0,250}roomId/);
+  assert.match(css, /\.match-invite/); assert.match(css, /@media \(max-width: 420px\)[\s\S]*\.match-invite/);
 });

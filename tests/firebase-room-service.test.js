@@ -36,7 +36,7 @@ test("best-of-three keeps the pair, settles once, and gates next series", async 
   } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
 
-test("roles lock at start and spectator suggestions never place a move", async () => {
+test("raised hands require current-player approval before one suggested cell", async () => {
   const { services, apis } = await identities(3, "roles-suggestions"); const [host, guest, spectator] = apis; const db = services[0].db;
   try {
     const roomId = await host.create("ROLE1"); await guest.join("ROLE1"); await spectator.join("ROLE1");
@@ -46,12 +46,16 @@ test("roles lock at start and spectator suggestions never place a move", async (
     await spectator.setRole(roomId, spectator.uid, "spectator");
     assert.equal((await data(db, "rooms", roomId, "players", spectator.uid)).role, "spectator"); await host.updateSeriesSetting(roomId, 1); await host.start(roomId);
     await assert.rejects(() => spectator.setRole(roomId, spectator.uid, "player"), /locked/); const room = await data(db, "rooms", roomId); let match = await data(db, "rooms", roomId, "matches", room.currentMatchId);
-    await assert.rejects(() => guest.suggest(roomId, room.currentMatchId, 4), /Spectators only/); await spectator.suggest(roomId, room.currentMatchId, 4); await new Promise(resolve => setTimeout(resolve, 520)); await spectator.suggest(roomId, room.currentMatchId, 5);
-    let suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid); assert.equal(suggestion.suggestedCell, 5); assert.equal(suggestion.status, "pending");
-    await assert.rejects(() => guest.resolveSuggestion(roomId, room.currentMatchId, spectator.uid, "accepted"), /Current player only/); await host.resolveSuggestion(roomId, room.currentMatchId, spectator.uid, "accepted");
-    match = await data(db, "rooms", roomId, "matches", room.currentMatchId); suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid); assert.equal(match.board.every(cell => cell === null), true); assert.equal(suggestion.status, "accepted");
-    await host.muteSuggestions(roomId, room.currentMatchId); assert.equal((await data(db, "rooms", roomId, "matches", room.currentMatchId)).suggestionsMutedMoveCount, 0);
-    await host.move(roomId, room.currentMatchId, 0); await new Promise(resolve => setTimeout(resolve, 520)); await assert.rejects(() => spectator.suggest(roomId, room.currentMatchId, 0), /empty square/); await assert.rejects(() => spectator.move(roomId, room.currentMatchId, 1), /Not your turn/);
+    await spectator.raiseHand(roomId, room.currentMatchId); let suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid);
+    assert.equal(suggestion.status, "raised"); assert.equal(suggestion.suggestedCell, null); await assert.rejects(() => spectator.suggestCell(roomId, room.currentMatchId, 4), /approve/);
+    await assert.rejects(() => guest.reviewHand(roomId, room.currentMatchId, spectator.uid, "approved"), /Current player only/); await host.reviewHand(roomId, room.currentMatchId, spectator.uid, "approved");
+    suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid); assert.equal(suggestion.status, "approved");
+    await spectator.suggestCell(roomId, room.currentMatchId, 5); suggestion = await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", spectator.uid); match = await data(db, "rooms", roomId, "matches", room.currentMatchId);
+    assert.equal(suggestion.status, "suggested"); assert.equal(suggestion.suggestedCell, 5); assert.equal(match.board.every(cell => cell === null), true); await assert.rejects(() => spectator.suggestCell(roomId, room.currentMatchId, 6), /approve/);
+    await host.move(roomId, room.currentMatchId, 0); match = await data(db, "rooms", roomId, "matches", room.currentMatchId); assert.equal(match.approvedSpectatorId, null); assert.equal(match.approvedSuggestionMoveCount, -1);
+    await assert.rejects(() => spectator.suggestCell(roomId, room.currentMatchId, 1), /approve/); await spectator.raiseHand(roomId, room.currentMatchId); await guest.reviewHand(roomId, room.currentMatchId, spectator.uid, "approved");
+    await assert.rejects(() => spectator.suggestCell(roomId, room.currentMatchId, 0), /empty/); await spectator.suggestCell(roomId, room.currentMatchId, 1);
+    await assert.rejects(() => spectator.move(roomId, room.currentMatchId, 2), /Not your turn/);
   } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
 
@@ -65,12 +69,25 @@ test("three active players rotate only after a series and concurrent next series
   } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
 
+test("multiple raised hands queue independently and only one is approved per turn", async () => {
+  const { services, apis } = await identities(4, "hand-queue"); const [host, guest, first, second] = apis; const db = services[0].db;
+  try {
+    const roomId = await host.create("HANDS"); await guest.join("HANDS", "player"); await first.join("HANDS", "spectator"); await second.join("HANDS", "spectator"); await host.start(roomId);
+    const room = await data(db, "rooms", roomId); await Promise.all([first.raiseHand(roomId, room.currentMatchId), second.raiseHand(roomId, room.currentMatchId)]);
+    let suggestions = (await getDocs(collection(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions"))).docs.map(item => item.data()); assert.equal(suggestions.filter(item => item.status === "raised").length, 2);
+    await host.reviewHand(roomId, room.currentMatchId, first.uid, "approved"); await assert.rejects(() => host.reviewHand(roomId, room.currentMatchId, second.uid, "approved"), /already approved/);
+    suggestions = (await getDocs(collection(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions"))).docs.map(item => item.data()); assert.equal(suggestions.find(item => item.spectatorId === second.uid).status, "raised");
+    await host.reviewHand(roomId, room.currentMatchId, second.uid, "dismissed"); await first.suggestCell(roomId, room.currentMatchId, 4); assert.equal((await data(db, "rooms", roomId, "matches", room.currentMatchId)).board[4], null);
+    assert.equal((await data(db, "rooms", roomId, "matches", room.currentMatchId, "suggestions", second.uid)).status, "dismissed");
+  } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
+});
+
 test("member resumes and probe restores match, series, roles and suggestions", async () => {
   const { services, apis } = await identities(3, "resume-series"); const [host, guest, spectator] = apis;
   try {
     const roomId = await host.create("RSM31"); await guest.join("RSM31"); await spectator.join("RSM31"); await spectator.setRole(roomId, spectator.uid, "spectator"); await host.start(roomId);
-    let probe = await spectator.probe(roomId); await spectator.suggest(roomId, probe.currentMatchId, 8); probe = await spectator.probe(roomId);
-    assert.equal(await spectator.resume(roomId), roomId); assert.equal(probe.series.targetWins, 2); assert.equal(probe.players.find(item => item.playerId === spectator.uid).role, "spectator"); assert.equal(probe.suggestions[0].suggestedCell, 8);
+    let probe = await spectator.probe(roomId); await spectator.raiseHand(roomId, probe.currentMatchId); probe = await spectator.probe(roomId);
+    assert.equal(await spectator.resume(roomId), roomId); assert.equal(probe.series.targetWins, 2); assert.equal(probe.players.find(item => item.playerId === spectator.uid).role, "spectator"); assert.equal(probe.suggestions[0].status, "raised");
   } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
 });
 
