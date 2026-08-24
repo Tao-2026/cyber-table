@@ -1,4 +1,4 @@
-import { collection, doc, getDoc, onSnapshot, runTransaction, serverTimestamp, Timestamp } from "firebase/firestore";
+import { collection, doc, getDoc, getDocFromServer, getDocsFromServer, onSnapshot, runTransaction, serverTimestamp, Timestamp } from "firebase/firestore";
 import { createGame, makeMove } from "../games/tic-tac-toe/rules.js";
 import { ROOM_EMOJIS } from "../core/room-machine.js";
 import { pairForRound } from "../core/round-robin.js";
@@ -36,6 +36,34 @@ export function createFirebaseRoomService({ db, uid }) {
       tx.set(playerRef(roomId, uid), playerData(uid, emoji, data.memberCount));
     });
     return roomId;
+  }
+
+  async function resume(roomId) {
+    const snapshot = await getDocFromServer(roomRef(roomId));
+    if (!snapshot.exists()) throw new Error("Room no longer exists");
+    if (!snapshot.data().memberIds.includes(uid)) throw new Error("This device is no longer a member of the room");
+    return roomId;
+  }
+
+  async function probe(roomId) {
+    const roomSnapshot = await getDocFromServer(roomRef(roomId));
+    if (!roomSnapshot.exists()) throw new Error("Room no longer exists");
+    const room = roomSnapshot.data();
+    if (!room.memberIds.includes(uid)) throw new Error("This device is no longer a member of the room");
+    const matchSnapshot = room.currentMatchId
+      ? await getDocFromServer(matchRef(roomId, room.currentMatchId))
+      : null;
+    const playerSnapshots = ["roundOver", "partyOver"].includes(room.status)
+      ? await getDocsFromServer(playersRef(roomId))
+      : null;
+    return {
+      id: roomId,
+      ...room,
+      match: matchSnapshot?.exists() ? { id: matchSnapshot.id, ...matchSnapshot.data() } : null,
+      players: playerSnapshots
+        ? playerSnapshots.docs.map(item => item.data()).sort((a, b) => a.seat - b.seat)
+        : null
+    };
   }
 
   function watch(roomId, listener, onError) {
@@ -110,7 +138,7 @@ export function createFirebaseRoomService({ db, uid }) {
     });
   }
 
-  return Object.freeze({ uid, create, join, watch, start, move, nextMatch, endParty });
+  return Object.freeze({ uid, create, join, resume, probe, watch, start, move, nextMatch, endParty });
 }
 
 function matchData(playerX, playerO, roundNumber) {

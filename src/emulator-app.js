@@ -1,12 +1,14 @@
-import { createFirebaseServices, localEmulatorConfig } from "./services/firebase-service.js?v=round-lifecycle-20260817";
-import { createFirebaseRoomService } from "./services/firebase-room-service.js?v=round-lifecycle-20260817";
+import { createFirebaseServices, localEmulatorConfig } from "./services/firebase-service.js?v=reconnect-20260824";
+import { createFirebaseRoomService } from "./services/firebase-room-service.js?v=reconnect-20260824";
 import { generateRoomCode } from "./services/local-room-service.js";
 
 export async function mountFirebaseApp(container, options = {}) {
   const emulator = options.emulator ?? true;
   const config = options.config ?? localEmulatorConfig;
   const backendLabel = emulator ? "LOCAL EMULATOR" : "FIREBASE";
-  let api, room, roomId, stopWatch, connection = navigator.onLine ? "connecting" : "offline";
+  const sessionKey = `cyberTable.activeRoom.${emulator ? "emulator" : "firebase"}`;
+  let api, room, roomId, stopWatch, reconnectTimer, healthTimer, reconnectAttempt = 0;
+  let connection = navigator.onLine ? "connecting" : "offline";
   const renderError = error => { connection = "error"; renderHome(error?.message || `${backendLabel} unavailable`); };
   const statusText = () => ({ connecting: `CONNECTING TO ${backendLabel}…`, synced: `SYNCED · ${backendLabel}`, offline: "OFFLINE · WAITING TO RECONNECT", error: `${backendLabel} UNAVAILABLE` })[connection];
 
@@ -46,14 +48,56 @@ export async function mountFirebaseApp(container, options = {}) {
     const leaders = [...room.players].sort((a, b) => b.partyScore - a.partyScore || a.seat - b.seat).slice(0, 3);
     shell(`<header class="game-header"><p class="eyebrow">Great game, everyone! 💗</p><h1>Party Podium</h1></header><div class="podium">${leaders.map((player, index) => `<div class="podium-place"><span>${player.emoji}</span><strong>#${index + 1}</strong><b>${player.partyScore} pts</b>${player.playerId === api.uid ? "<small>YOU</small>" : ""}</div>`).join("")}</div>${action("BACK HOME", "home", "button button-primary")}`);
   }
-  async function open(id) { roomId = id; stopWatch?.(); stopWatch = api.watch(id, value => { connection = "synced"; room = value; renderRoom(); }, renderError); }
+  function rememberRoom(id) { sessionStorage.setItem(sessionKey, id); }
+  function forgetRoom() { sessionStorage.removeItem(sessionKey); }
+  function stopRealtime() { stopWatch?.(); stopWatch = null; clearTimeout(reconnectTimer); clearInterval(healthTimer); }
+  function mergeProbe(value) {
+    room = { ...room, ...value, players: value.players || room?.players || [] };
+    connection = "synced"; reconnectAttempt = 0; renderRoom();
+  }
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    if (!api || !roomId || !navigator.onLine) return;
+    const delay = Math.min(1000 * (2 ** reconnectAttempt++), 10000);
+    reconnectTimer = setTimeout(() => restartRealtime(), delay);
+  }
+  function isTerminalRoomError(error) {
+    return ["permission-denied", "not-found"].includes(error?.code);
+  }
+  function watchError(error) {
+    if (isTerminalRoomError(error)) {
+      stopRealtime(); forgetRoom(); room = null; roomId = null; connection = "error";
+      renderHome("Previous room is no longer available to this device."); return;
+    }
+    connection = navigator.onLine ? "connecting" : "offline";
+    if (room) renderRoom();
+    scheduleReconnect();
+  }
+  function startHealthCheck() {
+    clearInterval(healthTimer);
+    healthTimer = setInterval(async () => {
+      if (!api || !roomId || !room || !navigator.onLine || document.hidden || room.status === "lobby") return;
+      try { mergeProbe(await api.probe(roomId)); }
+      catch { scheduleReconnect(); }
+    }, 15000);
+  }
+  function restartRealtime() {
+    if (!api || !roomId) return;
+    stopWatch?.(); connection = navigator.onLine ? "connecting" : "offline"; renderRoom();
+    stopWatch = api.watch(roomId, value => {
+      clearTimeout(reconnectTimer); reconnectAttempt = 0; connection = "synced"; room = value; renderRoom();
+    }, watchError);
+  }
+  async function open(id) {
+    roomId = id; rememberRoom(id); restartRealtime(); startHealthCheck();
+  }
 
   container.addEventListener("click", async event => {
     const target = event.target.closest("[data-fb-action]"); if (!target) return;
     try {
       const name = target.dataset.fbAction;
       if (name === "local") location.href = `${location.pathname}?backend=local`;
-      if (name === "home") { stopWatch?.(); room = null; roomId = null; renderHome(); }
+      if (name === "home") { stopRealtime(); forgetRoom(); room = null; roomId = null; renderHome(); }
       if (name === "join") renderJoin();
       if (name === "create") { target.disabled = true; await open(await api.create(generateRoomCode())); }
       if (name === "join-submit") { target.disabled = true; await open(await api.join(document.querySelector("#fb-code").value.trim().toUpperCase())); }
@@ -63,15 +107,33 @@ export async function mountFirebaseApp(container, options = {}) {
       if (name === "end") { target.disabled = true; await api.endParty(roomId); }
     } catch (error) { renderError(error); }
   });
-  addEventListener("offline", () => { connection = "offline"; room ? renderRoom() : renderHome(); });
-  addEventListener("online", () => { connection = "connecting"; room ? renderRoom() : renderHome(); });
+  addEventListener("offline", () => { clearTimeout(reconnectTimer); connection = "offline"; room ? renderRoom() : renderHome(); });
+  addEventListener("online", () => { connection = "connecting"; room ? renderRoom() : renderHome(); restartRealtime(); });
+  addEventListener("visibilitychange", () => { if (!document.hidden && roomId && navigator.onLine) restartRealtime(); });
 
   renderHome();
   try {
     const deviceId = sessionStorage.getItem("cyberTable.emulatorDevice") || crypto.randomUUID();
     sessionStorage.setItem("cyberTable.emulatorDevice", deviceId);
     const services = await createFirebaseServices({ config, emulator, appName: `cyber-table-${emulator ? "emulator" : "production"}-${deviceId}` });
-    api = createFirebaseRoomService(services); connection = "synced"; renderHome();
+    api = createFirebaseRoomService(services);
+    const rememberedRoom = sessionStorage.getItem(sessionKey);
+    if (rememberedRoom) {
+      try {
+        if (navigator.onLine) await api.resume(rememberedRoom);
+        await open(rememberedRoom);
+      }
+      catch (error) {
+        if (!navigator.onLine || ["unavailable", "auth/network-request-failed"].includes(error?.code)) {
+          connection = navigator.onLine ? "connecting" : "offline";
+          renderHome("Restoring your previous room when the connection returns…");
+          await open(rememberedRoom);
+        } else {
+          forgetRoom(); connection = "synced";
+          renderHome(`Previous room could not be restored: ${error.message}`);
+        }
+      }
+    } else { connection = "synced"; renderHome(); }
   }
   catch (error) { renderError(error); }
 }
