@@ -69,6 +69,13 @@ test("prejoin avatar picker is persistent, accessible, and role aware", async ()
   assert.match(css, /prefers-reduced-motion/); assert.match(css, /\.avatar-preview/);
 });
 
+test("create or join failure keeps the confirmed picker avatar for retry", async () => {
+  const source = await readFile("src/emulator-app.js", "utf8");
+  const errorBlock = source.match(/catch \(error\) \{[\s\S]*?else renderError\(error\);[\s\S]*?\}/)?.[0] || "";
+  assert.match(errorBlock, /pendingEntry/); assert.match(errorBlock, /renderAvatarPicker\(error\.message/);
+  assert.doesNotMatch(errorBlock, /randomAvatar|chooseAvatar|removeItem\(avatarSessionKey/);
+});
+
 test("all live identity surfaces resolve the stored avatar instead of rerandomizing", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
   assert.match(source, /function memberAvatar\(member\) \{ return resolveAvatar\(member\); \}/);
