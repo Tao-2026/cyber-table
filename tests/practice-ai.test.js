@@ -50,6 +50,12 @@ test("level 10 always selects a minimax-optimal response and cannot lose", () =>
   explore(createGame());
 });
 
+test("computer-first openings work at low, medium and expert difficulty", () => {
+  const computerStarts = createGame("O");
+  for (const level of [1, 5, 10]) assert.ok(Number.isInteger(choosePracticeMove(computerStarts, level, () => 0.6)));
+  assert.equal(choosePracticeMove(computerStarts, 10, () => 0.999), 0);
+});
+
 test("practice AI is a pure module without browser or Firebase dependencies", async () => {
   const source = await (await import("node:fs/promises")).readFile("src/games/tic-tac-toe/practice-ai.js", "utf8");
   assert.doesNotMatch(source, /\b(?:window|document|sessionStorage|firebase|Firestore)\b/);

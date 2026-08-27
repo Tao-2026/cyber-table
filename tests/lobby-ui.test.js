@@ -83,6 +83,18 @@ test("waiting practice exposes a persistent accessible 1–10 difficulty slider"
   assert.doesNotMatch(source, /api\.[A-Za-z]+\([^\n]*waitingDifficulty/);
 });
 
+test("waiting practice exposes three accessible first-player modes with per-tab progress", async () => {
+  const source = await readFile("src/emulator-app.js", "utf8");
+  const css = await readFile("styles/app.css", "utf8");
+  for (const text of ["FIRST PLAYER", "ALTERNATE", "ALWAYS YOU", "ALWAYS COMPUTER", 'type="radio"', 'name="first-player-mode"', "SELECTED", "COMPUTER STARTS", "YOU START", "COMPUTER IS THINKING…", "cyberTable.waitingPracticeFirstPlayer"]) assert.ok(source.includes(text), text);
+  assert.match(source, /changeFirstPlayerMode\(firstPlayerState, target\.value, boardIsEmpty\)/);
+  assert.match(source, /cancelWaitingComputerMove\(\)[\s\S]*waitingComputerGeneration/);
+  assert.match(source, /value\.status !== "lobby"[\s\S]*cancelWaitingComputerMove\(\)/);
+  assert.doesNotMatch(source, /api\.[A-Za-z]+\([^\n]*(?:firstPlayer|currentStarter|nextAlternateStarter)/);
+  assert.match(css, /\.first-player-mode/);
+  assert.match(css, /@media \(max-width: 420px\)[\s\S]*\.first-player-mode/);
+});
+
 test("create or join failure keeps the confirmed picker avatar for retry", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
   const errorBlock = source.match(/catch \(error\) \{[\s\S]*?else renderError\(error\);[\s\S]*?\}/)?.[0] || "";

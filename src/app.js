@@ -108,7 +108,7 @@ const backend = selectBackend({
   hostname: location.hostname
 });
 if (backend === "emulator" || backend === "firebase") {
-  const { mountFirebaseApp } = await import("./emulator-app.js?v=english-practice-difficulty-20260827");
+  const { mountFirebaseApp } = await import("./emulator-app.js?v=practice-first-player-20260827");
   const options = backend === "emulator"
     ? { emulator: true }
     : { emulator: false, config: (await import("./config/firebase-config.js")).firebaseConfig };

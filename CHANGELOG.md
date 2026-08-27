@@ -8,6 +8,9 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Added
 
+- Lobby waiting practice now alternates the first player between the player and computer after each completed game by default.
+- A three-option First Player control allows `ALTERNATE`, `ALWAYS YOU`, or `ALWAYS COMPUTER`; its mode and alternating progress remain local to the current browser tab.
+- Computer-first practice uses the current 1–10 difficulty, while rapid mode changes, leaving practice, and formal-series startup cancel stale computer tasks.
 - Lobby waiting practice now includes an accessible 1–10 computer difficulty slider with immediate effect and per-tab persistence.
 - Practice difficulty labels range from Very Easy through Expert; Level 10 uses an optimal full Minimax Tic-Tac-Toe strategy.
 - A pre-room family-friendly avatar picker automatically selects a local reviewed avatar before room creation or joining, with unlimited secure randomization and bilingual accessible names.

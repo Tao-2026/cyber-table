@@ -52,6 +52,16 @@ button:focus-visible, input:focus-visible { outline: none; box-shadow: var(--cyb
 .practice-difficulty output { color: var(--cyber-yellow); }
 .practice-difficulty input[type="range"] { width: 100%; min-height: 44px; margin: 0; accent-color: var(--cyber-mint); cursor: pointer; }
 .practice-difficulty input[type="range"]:focus-visible { outline: 3px solid var(--cyber-yellow); outline-offset: 3px; box-shadow: none; }
+.practice-settings { display: grid; gap: 12px; }
+.first-player-mode { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 12px; border: 2px solid var(--cyber-border); border-radius: 16px; background: var(--cyber-panel); }
+.first-player-mode legend { padding: 0 7px; color: var(--cyber-cyan); font-weight: 900; letter-spacing: .06em; }
+.first-player-mode label { min-height: 58px; display: grid; place-items: center; gap: 2px; padding: 8px; border: 1px solid var(--cyber-border); border-radius: 12px; background: var(--cyber-panel-strong); text-align: center; cursor: pointer; }
+.first-player-mode input { width: 1.1rem; height: 1.1rem; margin: 0; accent-color: var(--cyber-mint); }
+.first-player-mode label:has(input:checked) { outline: 3px solid var(--cyber-mint); outline-offset: 1px; }
+.first-player-mode label:has(input:focus-visible) { box-shadow: var(--cyber-focus); }
+.first-player-mode span { font-weight: 900; }
+.first-player-mode small { color: var(--cyber-yellow); font-weight: 900; }
+.starter-status { margin: 0; text-align: center; color: var(--cyber-yellow); font-weight: 900; letter-spacing: .05em; }
 .room-entry { display: grid; gap: 8px; color: var(--cyber-cyan); font-weight: 900; letter-spacing: .08em; }
 .room-entry input { min-height: 58px; border: 2px solid var(--cyber-border); border-radius: 16px; padding: 10px 16px; background: #f7f3ec; color: #14244c; font-size: 1.8rem; font-weight: 900; text-transform: uppercase; }
 .room-code-card { display: grid; gap: 4px; padding: 16px; border-radius: var(--cyber-radius); background: var(--cyber-purple); color: #14244c; text-align: center; box-shadow: var(--cyber-shadow); }
@@ -117,6 +127,8 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--cyb
   .app-shell { align-content: start; gap: 16px; }
   .waiting-practice .board { max-height: 52vh; }
   .waiting-practice .practice-difficulty { padding: 9px 12px; gap: 5px; }
+  .first-player-mode { grid-template-columns: 1fr; padding: 9px; }
+  .first-player-mode label { min-height: 48px; }
   .player-list { grid-template-columns: 1fr; max-height: 34vh; overflow: auto; }
   .join-role-actions, .role-break { padding-bottom: max(12px, env(safe-area-inset-bottom)); }
   .match-invite { order: -1; }
