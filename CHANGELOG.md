@@ -8,6 +8,8 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Added
 
+- Lobby waiting practice now includes an accessible 1–10 computer difficulty slider with immediate effect and per-tab persistence.
+- Practice difficulty labels range from Very Easy through Expert; Level 10 uses an optimal full Minimax Tic-Tac-Toe strategy.
 - A pre-room family-friendly avatar picker automatically selects a local reviewed avatar before room creation or joining, with unlimited secure randomization and bilingual accessible names.
 - A single stable avatar-ID system now follows hosts, players, and spectators through the Lobby, match header, raised hands, suggestions, winning assists, and Party Podium.
 - Firestore transactions reserve unique avatar IDs per room and return three available alternatives when a concurrent join takes the selected avatar.
@@ -23,6 +25,8 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Changed
 
+- The current product interface is English-only across home, avatar, room, Lobby, practice, match, spectator, series, results, Podium, error, toast, sharing, and accessibility surfaces while retaining the localization structure for future use.
+- Waiting-practice difficulty remains local to the current browser tab and never changes Firestore room, member, score, or formal-match data.
 - Active Firebase room context is retained per browser tab so refreshes return the same device identity to the same lobby, match, or Podium.
 - Five-character room codes now use `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, excluding visually ambiguous characters while retaining compatibility with existing five-character alphanumeric codes.
 - Room-code input ignores case, spaces, and hyphens; shared join links carry the normalized code and the Lobby explains that a room code is not a password.

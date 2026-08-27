@@ -4,9 +4,7 @@ const messages = {
 };
 
 export function getLanguage() {
-  return localStorage.getItem("cyberArcade.language") || localStorage.getItem("cyberTable.language") || "en";
+  return "en";
 }
-export function setLanguage(language) {
-  localStorage.setItem("cyberArcade.language", language);
-}
+export function setLanguage() {}
 export function t(language, key) { return messages[language]?.[key] ?? messages.en[key] ?? key; }

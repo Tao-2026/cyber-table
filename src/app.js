@@ -1,6 +1,6 @@
 import { createGame, makeMove, MARK_X, MARK_O } from "./games/tic-tac-toe/rules.js";
 import { chooseRandomMove } from "./games/tic-tac-toe/simple-ai.js";
-import { getLanguage, setLanguage, t } from "./core/i18n.js";
+import { getLanguage, t } from "./core/i18n.js";
 import { createRoom, joinRoom, startParty, playRoomMove, rotateRoom, endParty, podium } from "./core/room-machine.js";
 import { generateRoomCode, loadRoom, saveRoom, watchRoom } from "./services/local-room-service.js";
 
@@ -17,15 +17,11 @@ function button(label, action, className = "button", disabled = false) {
   return `<button class="${className}" data-action="${action}" ${disabled ? "disabled" : ""}>${label}</button>`;
 }
 
-function languageButton() {
-  return `<button class="button button-ghost language" data-action="language" aria-label="Change language">${language === "en" ? "中文" : "EN"}</button>`;
-}
-
 function renderHome(message = "") {
   stopWatching?.(); stopWatching = null; room = null;
   clearTimeout(computerTimer);
   app.innerHTML = `<section class="app-shell" aria-labelledby="brand">
-    <div class="topbar"><p class="eyebrow">Party arcade</p>${languageButton()}</div>
+    <div class="topbar"><p class="eyebrow">Party arcade</p></div>
     <div><h1 class="brand" id="brand">Cyber <span>Table</span></h1><p class="tagline">${t(language, "tagline")}</p></div>
     <div class="hero-art" aria-hidden="true"><span>🤖 💗 🐼 ⭐ 🐰</span></div>
     <div class="actions">
@@ -38,7 +34,7 @@ function renderHome(message = "") {
 }
 
 function renderJoin() {
-  app.innerHTML = `<section class="app-shell"><div class="topbar">${button("←", "home", "button button-ghost")}${languageButton()}</div><div><p class="eyebrow">Offline room · same browser only</p><h1>Join a room</h1><p class="tagline">This fallback is only available when local mode is explicitly selected.</p></div><label class="room-entry">ROOM CODE<input id="room-code" maxlength="5" autocomplete="off" inputmode="text" placeholder="7K2H9"></label>${button("JOIN ROOM", "join-submit", "button button-purple")}<p class="note" role="status"></p></section>`;
+  app.innerHTML = `<section class="app-shell"><div class="topbar">${button("←", "home", "button button-ghost")}</div><div><p class="eyebrow">Offline room · same browser only</p><h1>Join a room</h1><p class="tagline">This fallback is only available when local mode is explicitly selected.</p></div><label class="room-entry">ROOM CODE<input id="room-code" maxlength="5" autocomplete="off" inputmode="text" placeholder="7K2H9"></label>${button("JOIN ROOM", "join-submit", "button button-purple")}<p class="note" role="status"></p></section>`;
 }
 
 function openRoom(nextRoom) { room = nextRoom; saveRoom(room); stopWatching?.(); stopWatching = watchRoom(room.code, updated => { if (updated) { room = updated; renderRoom(); } }); renderRoom(); }
@@ -48,7 +44,7 @@ function renderRoom() {
   const host = room.hostId === playerId;
   if (room.status === "partyOver") return renderPodium(me);
   if (room.status === "playing" || room.status === "roundOver") return renderOnlineGame(me, host);
-  app.innerHTML = `<section class="app-shell room-screen"><div class="topbar">${button("←", "home", "button button-ghost")}${languageButton()}</div><header><p class="eyebrow">Lobby ${host ? "· HOST" : ""}</p><h1>Room ${room.code}</h1><p class="tagline">Share this code with up to 8 players.</p></header><div class="room-code-card"><span>ROOM CODE</span><strong>${room.code}</strong></div><div class="player-list">${room.players.map(player => `<div class="player"><span>${player.emoji}</span><strong>${player.id === playerId ? "YOU" : `PLAYER ${player.seat + 1}`}</strong><small>${player.id === room.hostId ? "HOST" : "READY"}</small></div>`).join("")}</div>${host ? button("START GAME", "room-start", "button button-primary", room.players.length < 2) : `<p class="note">Waiting for the host to start…</p>`}</section>`;
+  app.innerHTML = `<section class="app-shell room-screen"><div class="topbar">${button("←", "home", "button button-ghost")}</div><header><p class="eyebrow">Lobby ${host ? "· HOST" : ""}</p><h1>Room ${room.code}</h1><p class="tagline">Share this code with up to 8 players.</p></header><div class="room-code-card"><span>ROOM CODE</span><strong>${room.code}</strong></div><div class="player-list">${room.players.map(player => `<div class="player"><span>${player.emoji}</span><strong>${player.id === playerId ? "YOU" : `PLAYER ${player.seat + 1}`}</strong><small>${player.id === room.hostId ? "HOST" : "READY"}</small></div>`).join("")}</div>${host ? button("START GAME", "room-start", "button button-primary", room.players.length < 2) : `<p class="note">Waiting for the host to start…</p>`}</section>`;
 }
 
 function renderOnlineGame(me, host) {
@@ -69,7 +65,7 @@ function resultText() {
 function renderPractice() {
   const won = new Set(game.winningLine || []);
   app.innerHTML = `<section class="app-shell practice" aria-labelledby="practice-title">
-    <div class="topbar">${button("←", "home", "button button-ghost")} ${languageButton()}</div>
+    <div class="topbar">${button("←", "home", "button button-ghost")}</div>
     <header class="game-header"><p class="eyebrow">Cyber Table</p><h1 id="practice-title">${t(language, "practiceTitle")}</h1></header>
     <div class="matchup"><div class="player">🐼<strong>${t(language, "you")} · X</strong></div><strong>VS</strong><div class="player">🤖<strong>${t(language, "computer")} · O</strong></div></div>
     <div class="turn-banner" aria-hidden="true">${game.status === "playing" ? (game.currentTurn === MARK_X ? "▶ X" : "… O") : "★"}</div>
@@ -91,10 +87,9 @@ app.addEventListener("click", (event) => {
   const target = event.target.closest("[data-action]");
   if (!target) return;
   const action = target.dataset.action;
-  if (action === "language") { language = language === "en" ? "zh" : "en"; setLanguage(language); app.querySelector(".practice") ? renderPractice() : renderHome(); }
   if (action === "practice" || action === "restart") beginPractice();
   if (action === "home") renderHome();
-  if (action === "online") { if (target.textContent.includes("CREATE") || target.textContent.includes("创建")) openRoom(createRoom({ code: generateRoomCode(), hostId: playerId })); else renderJoin(); }
+  if (action === "online") { if (target.textContent.includes("CREATE")) openRoom(createRoom({ code: generateRoomCode(), hostId: playerId })); else renderJoin(); }
   if (action === "join-submit") { const code = document.querySelector("#room-code").value.trim().toUpperCase(); const found = loadRoom(code); if (!found) document.querySelector(".note").textContent = "Room not found"; else openRoom(joinRoom(found, playerId)); }
   if (action === "room-start") openRoom(startParty(room, playerId));
   if (action === "room-cell") openRoom(playRoomMove(room, playerId, Number(target.dataset.index)));
@@ -113,7 +108,7 @@ const backend = selectBackend({
   hostname: location.hostname
 });
 if (backend === "emulator" || backend === "firebase") {
-  const { mountFirebaseApp } = await import("./emulator-app.js?v=avatar-selection-20260824");
+  const { mountFirebaseApp } = await import("./emulator-app.js?v=english-practice-difficulty-20260827");
   const options = backend === "emulator"
     ? { emulator: true }
     : { emulator: false, config: (await import("./config/firebase-config.js")).firebaseConfig };

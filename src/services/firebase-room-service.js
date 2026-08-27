@@ -359,7 +359,7 @@ function validateAvatarId(avatarId) {
 }
 
 function avatarTakenError(usedAvatarIds) {
-  const error = new Error("That avatar just joined the party. Please choose another. / 这个头像刚刚被其他人选走了，请换一个。");
+  const error = new Error("That avatar just joined the party. Please choose another.");
   error.code = "avatar-taken";
   error.availableAvatarIds = availableAvatars(usedAvatarIds, 3).map(avatar => avatar.id);
   return error;

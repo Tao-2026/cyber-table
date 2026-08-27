@@ -6,20 +6,20 @@ test("waiting practice retains room listening and exits when a formal series sta
   const source = await readFile("src/emulator-app.js", "utf8");
   assert.match(source, /waitingPractice && prior\?\.status === "lobby"/);
   assert.match(source, /value\.status !== "lobby"[\s\S]*waitingPractice = false/);
-  assert.match(source, /RETURN TO LOBBY \/ 返回大厅/);
+  assert.match(source, /RETURN TO LOBBY/);
   assert.doesNotMatch(source, /name === "return-lobby"[\s\S]{0,120}forgetRoom/);
 });
 
 test("lobby exposes series, player and spectator labels without color-only meaning", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
-  for (const text of ["SINGLE ROUND", "BEST OF 3", "BEST OF 5", "PLAYERS / 参赛玩家", "SPECTATORS / 观众", "PLAYER", "SPECTATOR", "HOST", "YOU"]) assert.ok(source.includes(text) || source.includes("presetForTarget"));
+  for (const text of ["SINGLE ROUND", "BEST OF 3", "BEST OF 5", "PLAYERS", "SPECTATORS", "PLAYER", "SPECTATOR", "HOST", "YOU"]) assert.ok(source.includes(text) || source.includes("presetForTarget"));
 });
 
 test("hand approval and suggested-cell UI are separate from formal moves", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
-  assert.match(source, /RAISE HAND \/ 举手/);
-  assert.match(source, /ALLOW TO SUGGEST \/ 允许指点/);
-  assert.match(source, /You may suggest one square\. \/ 你现在可以建议一个格子。/);
+  assert.match(source, /RAISE HAND/);
+  assert.match(source, /ALLOW TO SUGGEST/);
+  assert.match(source, /You may suggest one square\./);
   assert.match(source, /data-fb-action="\$\{canSuggest \? "suggest-cell" : "cell"\}"/);
   assert.match(source, /aria-live="polite"/);
   const suggestBlock = source.match(/if \(name === "suggest-cell"\)[\s\S]*?\n\s*if \(name === "hand-approve"\)/)?.[0] || "";
@@ -36,14 +36,14 @@ test("phone layout keeps practice board and controls in normal flow", async () =
 test("unified join offers explicit player and spectator entry with role-aware links", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
   const codes = await readFile("src/core/room-code.js", "utf8");
-  for (const text of ["PLAYER / 玩家", "SPECTATOR / 观众", "CONFIRM AND JOIN / 确认并加入", "Game already started. You joined as a spectator.", "比赛已经开始，你已作为观众加入。", "SHARE PLAYER LINK", "SHARE SPECTATOR LINK"]) assert.ok(source.includes(text));
+  for (const text of ["PLAYER", "SPECTATOR", "CONFIRM AND JOIN", "Game already started. You joined as a spectator.", "SHARE PLAYER LINK", "SHARE SPECTATOR LINK"]) assert.ok(source.includes(text));
   assert.match(codes, /searchParams\.set\("role", role\)/);
   assert.match(source, /ROOM \$\{room\.memberCount\}/);
 });
 
 test("series break exposes an accessible player queue without moving the board", async () => {
   const source = await readFile("src/emulator-app.js", "utf8");
-  for (const text of ["SERIES BREAK / 系列间准备", "JOIN PLAYER QUEUE / 申请参赛", "PLAYER REQUEST PENDING / 参赛申请待确认", "YOU ARE SPECTATING / 你正在观战", "BOARD IS READ ONLY"]) assert.ok(source.includes(text));
+  for (const text of ["SERIES BREAK", "JOIN PLAYER QUEUE", "PLAYER REQUEST PENDING", "YOU ARE SPECTATING", "BOARD IS READ ONLY"]) assert.ok(source.includes(text));
   const requestBlock = source.match(/if \(name === "request-player"\)[\s\S]*?if \(name === "request-spectator"\)/)?.[0] || "";
   assert.doesNotMatch(requestBlock, /api\.move/);
 });
@@ -56,17 +56,31 @@ test("mobile player and spectator sections collapse and do not cover safe areas"
 
 test("every match state keeps a public room code and spectator invite", async () => {
   const source = await readFile("src/emulator-app.js", "utf8"); const css = await readFile("styles/app.css", "utf8");
-  for (const text of ["COPY CODE / 复制房间码", "INVITE SPECTATORS / 邀请观众", "Friends can join as spectators while the game is running.", "比赛进行中，朋友仍可使用房间码加入观战。"] ) assert.ok(source.includes(text));
+  for (const text of ["COPY CODE", "INVITE SPECTATORS", "Friends can join as spectators while the game is running."] ) assert.ok(source.includes(text));
   assert.match(source, /searchParams\.set\("role", "spectator"\)/); assert.doesNotMatch(source, /spectatorInviteUrl[\s\S]{0,250}roomId/);
   assert.match(css, /\.match-invite/); assert.match(css, /@media \(max-width: 420px\)[\s\S]*\.match-invite/);
 });
 
 test("prejoin avatar picker is persistent, accessible, and role aware", async () => {
   const source = await readFile("src/emulator-app.js", "utf8"); const css = await readFile("styles/app.css", "utf8");
-  for (const text of ["YOUR AVATAR / 你的头像", "RANDOMIZE / 换一个", "CONFIRM AND CREATE / 确认并创建", "CONFIRM AND JOIN / 确认并加入", "Selected avatar:", "当前头像："]) assert.ok(source.includes(text));
+  for (const text of ["YOUR AVATAR", "RANDOMIZE", "CONFIRM AND CREATE", "CONFIRM AND JOIN", "Selected avatar:"]) assert.ok(source.includes(text));
   assert.match(source, /cyberTable\.selectedAvatar/); assert.match(source, /sessionStorage\.setItem\(avatarSessionKey/);
   assert.match(source, /api\.create\(null, selectedAvatar\.id\)/); assert.match(source, /api\.join\([^\n]+selectedAvatar\.id\)/);
   assert.match(css, /prefers-reduced-motion/); assert.match(css, /\.avatar-preview/);
+});
+
+test("live product surfaces are English-only while localization data remains available", async () => {
+  const files = ["src/emulator-app.js", "src/app.js", "src/services/firebase-room-service.js", "index.html"];
+  for (const file of files) assert.doesNotMatch(await readFile(file, "utf8"), /[\u3400-\u9fff]/, file);
+  const i18n = await readFile("src/core/i18n.js", "utf8");
+  assert.match(i18n, /return "en"/);
+});
+
+test("waiting practice exposes a persistent accessible 1–10 difficulty slider", async () => {
+  const source = await readFile("src/emulator-app.js", "utf8");
+  for (const text of ['type="range"', 'min="1"', 'max="10"', 'step="1"', "COMPUTER DIFFICULTY", "aria-valuetext", "sessionStorage.setItem(difficultySessionKey", "choosePracticeMove(waitingGame, waitingDifficulty)"]) assert.ok(source.includes(text), text);
+  assert.match(source, /scheduleWaitingComputerMove\(\)[\s\S]*waitingComputerGeneration/);
+  assert.doesNotMatch(source, /api\.[A-Za-z]+\([^\n]*waitingDifficulty/);
 });
 
 test("create or join failure keeps the confirmed picker avatar for retry", async () => {
