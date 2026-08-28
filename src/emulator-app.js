@@ -1,54 +1,318 @@
-import { createFirebaseServices, localEmulatorConfig } from "./services/firebase-service.js";
-import { createFirebaseRoomService } from "./services/firebase-room-service.js";
-import { generateRoomCode } from "./services/local-room-service.js";
+import { createFirebaseServices, localEmulatorConfig } from "./services/firebase-service.js?v=avatar-selection-20260824";
+import { createFirebaseRoomService } from "./services/firebase-room-service.js?v=avatar-selection-20260824";
+import { createGame, makeMove } from "./games/tic-tac-toe/rules.js";
+import { choosePracticeMove, difficultyName, normalizePracticeDifficulty, PRACTICE_DIFFICULTY_DEFAULT } from "./games/tic-tac-toe/practice-ai.js";
+import { beginPracticeRound, changeFirstPlayerMode, completePracticeRound, FIRST_PLAYER_MODES, restoreFirstPlayerState } from "./games/tic-tac-toe/practice-first-player.js";
+import { gameDefinition, GAMES, normalizeGameType } from "./games/registry.js";
+import { applyMove as applyGomokuPracticeMove, createInitialState as createGomokuPractice, stateFromMoves as gomokuStateFromMoves } from "./games/gomoku/rules.js";
+import { chooseGomokuPracticeMove } from "./games/gomoku/practice-ai.js";
+import { renderGomokuBoard } from "./games/gomoku/ui.js";
+import { presetForTarget } from "./core/series.js";
+import { normalizeRoomCode, roomShareUrl } from "./core/room-code.js";
+import { avatarById, randomAvatar, resolveAvatar } from "./config/avatars.js";
 
 export async function mountFirebaseApp(container, options = {}) {
   const emulator = options.emulator ?? true;
   const config = options.config ?? localEmulatorConfig;
   const backendLabel = emulator ? "LOCAL EMULATOR" : "FIREBASE";
-  let api, room, roomId, stopWatch, connection = navigator.onLine ? "connecting" : "offline";
+  const sessionKey = `cyberTable.activeRoom.${emulator ? "emulator" : "firebase"}`;
+  const avatarSessionKey = `cyberTable.selectedAvatar.${emulator ? "emulator" : "firebase"}`;
+  const entrySessionKey = `cyberTable.pendingEntry.${emulator ? "emulator" : "firebase"}`;
+  let difficultySessionKey = "cyberTable.waitingPracticeDifficulty.tic-tac-toe";
+  let firstPlayerSessionKey = "cyberTable.waitingPracticeFirstPlayer.tic-tac-toe";
+  let api, room, roomId, stopWatch, reconnectTimer, healthTimer, reconnectAttempt = 0;
+  let waitingPractice = false, waitingGame = createGame(), waitingComputerTimer = null, waitingComputerGeneration = 0, lobbyNotice = "";
+  let waitingPracticeGameType = "tic-tac-toe";
+  let waitingPlayerStone="X",waitingComputerStone="O";
+  let gomokuZoom = 1;
+  let waitingDifficulty = normalizePracticeDifficulty(sessionStorage.getItem(difficultySessionKey) ?? PRACTICE_DIFFICULTY_DEFAULT);
+  let firstPlayerState = restoreFirstPlayerState(JSON.parse(sessionStorage.getItem(firstPlayerSessionKey) || "{}"));
+  let pendingEntry = JSON.parse(sessionStorage.getItem(entrySessionKey) || "null");
+  let selectedAvatar = avatarById(sessionStorage.getItem(avatarSessionKey)) || randomAvatar();
+  sessionStorage.setItem(avatarSessionKey, selectedAvatar.id);
+  let connection = navigator.onLine ? "connecting" : "offline";
   const renderError = error => { connection = "error"; renderHome(error?.message || `${backendLabel} unavailable`); };
   const statusText = () => ({ connecting: `CONNECTING TO ${backendLabel}…`, synced: `SYNCED · ${backendLabel}`, offline: "OFFLINE · WAITING TO RECONNECT", error: `${backendLabel} UNAVAILABLE` })[connection];
 
-  function shell(content) { container.innerHTML = `<section class="app-shell emulator-screen"><div class="connection" data-state="${connection}" role="status">${statusText()}</div>${content}</section>`; }
+  function shell(content, className = "") { container.innerHTML = `<section class="app-shell emulator-screen ${className}"><div class="connection" data-state="${connection}" role="status">${statusText()}</div>${content}</section>`; }
   function action(label, name, kind = "button") { return `<button class="${kind}" data-fb-action="${name}">${label}</button>`; }
+  function spectatorInviteUrl(code) { const url = new URL(location.pathname, location.origin); url.searchParams.set("room", code); url.searchParams.set("role", "spectator"); return url.href; }
+  function memberAvatar(member) { return resolveAvatar(member); }
+  function chooseAvatar(avatar) { selectedAvatar = avatar; sessionStorage.setItem(avatarSessionKey, avatar.id); }
+  function saveFirstPlayerState() { sessionStorage.setItem(firstPlayerSessionKey, JSON.stringify(firstPlayerState)); }
+  function setPendingEntry(value) { pendingEntry = value; if (value) sessionStorage.setItem(entrySessionKey, JSON.stringify(value)); else sessionStorage.removeItem(entrySessionKey); }
   function renderHome(message = "") { shell(`<div><p class="eyebrow">${backendLabel}</p><h1 class="brand">Cyber <span>Table</span></h1><p class="tagline">Two real anonymous identities · ${emulator ? "local services only" : "independent Spark project"}</p></div><div class="hero-art"><span>🤖 💗 🐼 ⭐ 🐰</span></div><div class="actions">${action(`CREATE ${emulator ? "EMULATOR " : ""}ROOM`, "create", "button button-primary")}${action("JOIN WITH CODE", "join", "button button-purple")}${action("COMPUTER PRACTICE", "local", "button button-ghost")}</div><p class="note">${message}</p>`); }
-  function renderJoin() { shell(`<div><p class="eyebrow">${backendLabel}</p><h1>Join room</h1></div><label class="room-entry">ROOM CODE<input id="fb-code" maxlength="5" placeholder="TST42"></label>${action("JOIN ROOM", "join-submit", "button button-purple")}${action("BACK", "home", "button button-ghost")}<p class="note"></p>`); }
+  function renderJoin(message = "") { const params = new URLSearchParams(location.search); const sharedCode = normalizeRoomCode(params.get("room")).replace(/[^A-Z0-9]/g, "").slice(0, 5); shell(`<div><p class="eyebrow">${backendLabel}</p><h1>Join room</h1><p class="tagline">Players and spectators use the same five-character code. After a game starts, new members can only spectate. A room code is not a password.</p></div><label class="room-entry">ROOM CODE<input id="fb-code" maxlength="12" value="${sharedCode}" placeholder="TST42" autocomplete="off"></label>${action("CONTINUE", "join-continue", "button button-primary")}${action("BACK", "home", "button button-ghost")}<p class="note" role="status">${message}</p>`); }
+  function renderAvatarPicker(message = "", alternatives = []) {
+    const join = pendingEntry?.mode === "join"; const spectatorOnly = pendingEntry?.preview?.spectatorOnly; const role = spectatorOnly ? "spectator" : pendingEntry?.role || "player";
+    const roleControls = join ? `<fieldset class="avatar-role"><legend>JOIN ROLE</legend>${!spectatorOnly ? `<button data-fb-action="avatar-role" data-role="player" class="${role === "player" ? "selected" : ""}">PLAYER</button>` : ""}<button data-fb-action="avatar-role" data-role="spectator" class="${role === "spectator" ? "selected" : ""}">SPECTATOR</button></fieldset>${spectatorOnly ? `<p class="turn-banner">Game already started. New members join as spectators.</p>` : ""}` : "";
+    const alternativesUi = alternatives.length ? `<div class="avatar-alternatives"><p>AVAILABLE AVATARS</p>${alternatives.map(id => { const avatar = avatarById(id); return avatar ? `<button data-fb-action="avatar-pick" data-avatar-id="${avatar.id}" aria-label="Use ${avatar.label.en}">${avatar.emoji}<small>${avatar.label.en}</small></button>` : ""; }).join("")}</div>` : "";
+    shell(`<header><p class="eyebrow">YOUR AVATAR</p><h1>${join ? "Choose before joining" : "Choose before creating"}</h1></header><section class="avatar-picker" aria-live="polite"><div class="avatar-preview" role="img" aria-label="Selected avatar: ${selectedAvatar.label.en}."><span aria-hidden="true">${selectedAvatar.emoji}</span><strong>${selectedAvatar.label.en}</strong></div>${action("RANDOMIZE", "avatar-randomize", "button button-purple")}${alternativesUi}${roleControls}${action(join ? "CONFIRM AND JOIN" : "CONFIRM AND CREATE", "avatar-confirm", "button button-primary")}${action("BACK", join ? "join" : "home", "button button-ghost")}<p class="note" role="status">${message}</p></section>`, "avatar-screen");
+  }
   function renderRoom() {
     if (!room) return;
     const host = room.hostId === api.uid; const match = room.match;
-    if (room.status === "playing" && match) return renderMatch(host, match);
-    shell(`<div><p class="eyebrow">Lobby ${host ? "· HOST" : ""}</p><h1>Room ${room.roomCode}</h1><p class="tagline">Open another browser session with <code>?backend=${emulator ? "emulator" : "firebase"}</code>.</p></div><div class="room-code-card"><span>ROOM CODE</span><strong>${room.roomCode}</strong></div><div class="player-list">${room.players.map(player => `<div class="player"><span>${player.emoji}</span><strong>${player.playerId === api.uid ? "YOU" : `PLAYER ${player.seat + 1}`}</strong><small>${player.playerId === room.hostId ? "HOST" : "READY"}</small></div>`).join("")}</div>${host ? `<button class="button button-primary" data-fb-action="start" ${room.players.length < 2 ? "disabled" : ""}>START GAME</button>` : `<p class="note">Waiting for host…</p>`}${action("LEAVE VIEW", "home", "button button-ghost")}`);
+    if (room.status === "partyOver") return renderPodium();
+    if (room.status === "lobby" && waitingPractice) return renderWaitingPractice();
+    if (["playing", "roundOver", "seriesOver", "seriesBreak"].includes(room.status)) {
+      if (match && !room.matchLoading) return renderMatch(host, match);
+      return renderMatchLoading();
+    }
+    const activePlayers = room.players.filter(player => (player.role || "player") === "player");
+    const spectators = room.players.filter(player => player.role === "spectator");
+    const preset = presetForTarget(room.settings.seriesTargetWins || 2);
+    const playerCard = player => { const avatar = memberAvatar(player); return `<div class="player"><span aria-label="${avatar.label.en}">${avatar.emoji}</span><strong>${player.playerId === api.uid ? "YOU" : `PLAYER ${player.seat + 1}`}</strong><small>${player.playerId === room.hostId ? "HOST · " : ""}${player.role === "spectator" ? "SPECTATOR" : "PLAYER"}</small>${(host || player.playerId === api.uid) ? `<button class="role-toggle" data-fb-action="role" data-player-id="${player.playerId}" data-role="${player.role === "player" ? "spectator" : "player"}">SWITCH TO ${player.role === "player" ? "SPECTATOR" : "PLAYER"}</button>` : ""}</div>`; };
+    const seriesPicker = host
+      ? `<fieldset class="series-picker"><legend>SERIES FORMAT</legend>${[1,2,3].map(target => `<button data-fb-action="series-setting" data-target-wins="${target}" class="${target === preset.targetWins ? "selected" : ""}">${presetForTarget(target).label}</button>`).join("")}</fieldset>`
+      : `<div class="turn-banner">${preset.label} · FIRST TO ${preset.targetWins} WINS</div>`;
+    const selected=normalizeGameType(room.selectedGameType),gameCards=`<fieldset class="game-picker"><legend>CHOOSE THE NEXT GAME</legend>${Object.values(GAMES).map(game=>`<button data-fb-action="select-game" data-game-type="${game.id}" class="game-card ${selected===game.id?"selected":""}" aria-pressed="${selected===game.id}" ${host?"":"disabled"}><strong>${game.name}</strong><span>${game.description}</span><small>${game.duration}</small>${selected===game.id?"<b>SELECTED</b>":""}</button>`).join("")}</fieldset>`;
+    shell(`<div><p class="eyebrow">Party Lobby ${host ? "· HOST" : ""}</p><h1>Room ${room.roomCode}</h1><p class="tagline">Choose games together without leaving this Party Room.</p><p class="room-capacity" aria-label="Room ${room.memberCount} of ${room.settings.maxMembers || room.settings.maxPlayers || 8}">ROOM ${room.memberCount}/${room.settings.maxMembers || room.settings.maxPlayers || 8} · PLAYERS ${activePlayers.length}/${room.settings.maxActivePlayers || 6} · SPECTATORS ${spectators.length}</p></div><div class="room-code-card"><span>ROOM CODE</span><strong>${room.roomCode}</strong><a href="${roomShareUrl(location.href, room.roomCode, "player")}">SHARE PLAYER LINK</a><a href="${roomShareUrl(location.href, room.roomCode, "spectator")}">SHARE SPECTATOR LINK</a></div>${gameCards}${seriesPicker}<details open><summary>PLAYERS · ${activePlayers.length}/${room.settings.maxActivePlayers || 6}</summary><div class="player-list">${activePlayers.map(playerCard).join("") || `<p class="note">No active players</p>`}</div></details><details open><summary>SPECTATORS · ${spectators.length}</summary><div class="player-list">${spectators.map(playerCard).join("") || `<p class="note">No spectators yet</p>`}</div></details><p class="note" role="status">${lobbyNotice}</p>${action(`PRACTICE ${gameDefinition(selected).name} WHILE WAITING`, "waiting-practice", "button button-purple")}${host ? `<button class="button button-primary" data-fb-action="start" ${activePlayers.length < 2 ? "disabled" : ""}>START ${gameDefinition(selected).name} · ${preset.label}</button>` : `<p class="note">Waiting for host…</p>`}${action("LEAVE VIEW", "home", "button button-ghost")}`);
+  }
+  function waitingResult() { return waitingGame.status === "draw" ? "PRACTICE DRAW" : waitingGame.status === "won" ? (waitingGame.winner === waitingPlayerStone ? "YOU WIN" : "COMPUTER WINS") : waitingGame.currentTurn === waitingPlayerStone ? (waitingGame.moveCount === 0 ? "YOU START" : "YOUR PRACTICE TURN") : "COMPUTER IS THINKING…"; }
+  function gomokuDifficultySummary(level){return level>=9?"THREAT SEARCH ACTIVE · 3-PLY ATTACK AND DEFENSE":level>=7?"THREAT DEFENSE · OPEN THREE, FOUR, AND DOUBLE THREATS":level>=5?"TACTICAL DEFENSE · IMMEDIATE WINS AND BLOCKS":"CASUAL PLAY · MISTAKES ARE POSSIBLE";}
+  function renderWaitingPractice() {
+    const won = new Set(waitingGame.winningLine || []);
+    const levelName = difficultyName(waitingDifficulty);
+    const difficulty = `<section class="practice-difficulty"><label for="practice-difficulty">COMPUTER DIFFICULTY</label><input id="practice-difficulty" type="range" min="1" max="10" step="1" value="${waitingDifficulty}" aria-label="Computer difficulty" aria-valuetext="Level ${waitingDifficulty} of 10, ${levelName.toLowerCase()}" data-fb-input="practice-difficulty"><output for="practice-difficulty" aria-live="polite">LEVEL ${waitingDifficulty} · ${levelName}</output></section>`;
+    const firstPlayer = `<fieldset class="first-player-mode"><legend>FIRST PLAYER</legend>${[[FIRST_PLAYER_MODES.ALTERNATE,"ALTERNATE"],[FIRST_PLAYER_MODES.ALWAYS_PLAYER,"ALWAYS YOU"],[FIRST_PLAYER_MODES.ALWAYS_COMPUTER,"ALWAYS COMPUTER"]].map(([value,label]) => `<label><input type="radio" name="first-player-mode" value="${value}" data-fb-input="first-player-mode" ${firstPlayerState.firstPlayerMode === value ? "checked" : ""}><span>${label}</span>${firstPlayerState.firstPlayerMode === value ? "<small>SELECTED</small>" : ""}</label>`).join("")}</fieldset>`;
+    const starter = firstPlayerState.currentStarter === "O" ? "COMPUTER STARTS" : "YOU START";
+    const displayedRound = firstPlayerState.currentRoundCompleted ? firstPlayerState.practiceRoundNumber - 1 : firstPlayerState.practiceRoundNumber;
+    const board=waitingPracticeGameType==="gomoku"?renderGomokuBoard({state:waitingGame,canMove:waitingGame.status==="playing"&&waitingGame.currentTurn===waitingPlayerStone}).replaceAll('data-fb-action="gomoku-cell"','data-fb-action="waiting-gomoku-cell"'):`<div class="board" role="grid" aria-label="Waiting practice board">${waitingGame.board.map((mark,index)=>`<button class="cell ${won.has(index)?"winner":""}" data-fb-action="waiting-cell" data-index="${index}" data-mark="${mark||""}" aria-label="Practice square ${index+1}${mark?`, ${mark}`:""}" ${mark||waitingGame.status!=="playing"||waitingGame.currentTurn!==waitingPlayerStone?"disabled":""}>${mark||""}</button>`).join("")}</div>`;
+    const rulesNote=waitingPracticeGameType==="gomoku"?`<div class="gomoku-rules"><strong>CASUAL GOMOKU · CONNECT FIVE</strong><span>NO FORBIDDEN-MOVE RULES</span></div><p class="ai-strength-note" role="status">${gomokuDifficultySummary(waitingDifficulty)}</p>`:"";
+    shell(`<header class="game-header"><p class="eyebrow">LOCAL ${gameDefinition(waitingPracticeGameType).name} PRACTICE · ROOM ${room.roomCode} STILL SYNCED</p><h1>Practice while waiting</h1></header><div class="turn-banner" role="status">${lobbyNotice || "Room listening continues. Practice never changes party points."}</div>${rulesNote}<div class="practice-settings">${difficulty}${firstPlayer}</div><p class="starter-status">ROUND ${displayedRound} · ${starter}</p>${board}<p class="status" role="status">${waitingResult()}</p>${waitingGame.status !== "playing" ? action("PRACTICE AGAIN", "waiting-practice-reset", "button button-primary") : ""}${action("RETURN TO LOBBY", "return-lobby", "button button-ghost")}`, `practice waiting-practice ${waitingPracticeGameType==="gomoku"?"gomoku-screen":""}`);
+  }
+  function cancelWaitingComputerMove() { clearTimeout(waitingComputerTimer); waitingComputerTimer = null; waitingComputerGeneration += 1; }
+  function scheduleWaitingComputerMove() { cancelWaitingComputerMove(); const generation = waitingComputerGeneration; waitingComputerTimer = setTimeout(() => waitingComputerMove(generation), 400); }
+  function finishWaitingRoundIfNeeded() { if (waitingGame.status === "playing") return; firstPlayerState = completePracticeRound(firstPlayerState); saveFirstPlayerState(); }
+  function startWaitingRound() { cancelWaitingComputerMove(); firstPlayerState = beginPracticeRound(firstPlayerState); saveFirstPlayerState(); const computerStarts=firstPlayerState.currentStarter==="O";if(waitingPracticeGameType==="gomoku"){waitingPlayerStone=computerStarts?"white":"black";waitingComputerStone=computerStarts?"black":"white";waitingGame=createGomokuPractice("black");}else{waitingPlayerStone="X";waitingComputerStone="O";waitingGame=createGame(firstPlayerState.currentStarter);} renderWaitingPractice(); if (computerStarts) scheduleWaitingComputerMove(); }
+  function resetEmptyWaitingRound() { cancelWaitingComputerMove(); const computerStarts=firstPlayerState.currentStarter==="O"; if(waitingPracticeGameType==="gomoku"){waitingPlayerStone=computerStarts?"white":"black";waitingComputerStone=computerStarts?"black":"white";waitingGame=createGomokuPractice("black");}else{waitingPlayerStone="X";waitingComputerStone="O";waitingGame=createGame(firstPlayerState.currentStarter);} renderWaitingPractice(); if(computerStarts)scheduleWaitingComputerMove(); }
+  function waitingComputerMove(generation) { if (generation !== waitingComputerGeneration || !waitingPractice || waitingGame.status !== "playing" || waitingGame.currentTurn !== waitingComputerStone) return;if(waitingPracticeGameType==="gomoku"){const move=chooseGomokuPracticeMove(waitingGame,waitingDifficulty);if(generation!==waitingComputerGeneration||!waitingPractice||waitingPracticeGameType!=="gomoku")return;if(move)waitingGame=applyGomokuPracticeMove(waitingGame,move.row,move.column);}else{const cell = choosePracticeMove(waitingGame, waitingDifficulty);if(cell!==null)waitingGame=makeMove(waitingGame,cell);} finishWaitingRoundIfNeeded(); waitingComputerTimer = null; renderWaitingPractice(); }
+  function renderMatchLoading() {
+    const game=gameDefinition(room?.activeGameType); shell(`<header class="game-header"><p class="eyebrow">PLAY</p><h1>LOADING ${game.name}…</h1></header><div class="turn-banner" role="status">Synchronizing the latest match. No refresh is needed.</div>`, "practice");
   }
   function renderMatch(host, match) {
+    if(normalizeGameType(match.gameType)==="gomoku")return renderGomokuMatch(host,match);
     const active = [match.playerX, match.playerO].includes(api.uid); const expected = match.currentTurn === "X" ? match.playerX : match.playerO; const canMove = match.status === "playing" && expected === api.uid;
-    const player = id => room.players.find(item => item.playerId === id);
-    shell(`<header><p class="eyebrow">${active ? "PLAY" : "SPECTATING"}</p><h1>${canMove ? "Your turn" : active ? "Opponent's turn" : "Live spectator view"}</h1></header><div class="matchup"><div class="player">${player(match.playerX)?.emoji}<strong>X</strong></div><strong>VS</strong><div class="player">${player(match.playerO)?.emoji}<strong>O</strong></div></div><div class="board" role="grid">${match.board.map((mark,index)=>`<button class="cell" data-fb-action="cell" data-index="${index}" data-mark="${mark||""}" ${!canMove||mark?"disabled":""}>${mark||""}</button>`).join("")}</div><p class="status">${match.status === "playing" ? (active ? `${match.currentTurn}'s TURN` : "YOU ARE SPECTATING · READ ONLY") : match.status.toUpperCase()}</p>${action("LEAVE VIEW", "home", "button button-ghost")}`);
+    const player = id => room.players.find(item => item.playerId === id); const me = player(api.uid);
+    const terminal = match.status !== "playing"; const spectator = me?.role === "spectator";
+    const winnerPlayer = match.winner === "X" ? player(match.playerX) : match.winner === "O" ? player(match.playerO) : null;
+    const series = room.series; const seriesOver = ["seriesOver","seriesBreak"].includes(room.status);
+    const title = seriesOver ? (series?.status === "draw" ? "SERIES DRAW" : `${memberAvatar(player(series?.winnerId) || {}).emoji} SERIES WIN`) : match.status === "draw" ? "ROUND DRAW" : terminal ? `${memberAvatar(winnerPlayer || {}).emoji} ROUND WIN` : canMove ? "Your turn" : active ? "Opponent's turn" : "Live spectator view";
+    const status = match.status === "draw" ? "DRAW · BOTH PLAYERS +1 POINT" : terminal ? `${memberAvatar(winnerPlayer || {}).emoji} ${match.winner} WINS · +3 POINTS` : active ? `${match.currentTurn}'s TURN` : "YOU ARE SPECTATING · READ ONLY";
+    const winning = new Set(match.winningLine || []); const currentSuggestions = (room.suggestions || []).filter(item => item.moveCount === match.moveCount);
+    const raised = currentSuggestions.filter(item => item.status === "raised"); const submitted = currentSuggestions.find(item => item.status === "suggested"); const mine = currentSuggestions.find(item => item.spectatorId === api.uid);
+    const suggestionsMuted = match.suggestionsMutedMoveCount === match.moveCount;
+    const suggestionAvatar = item => avatarById(item?.spectatorAvatarId) || { emoji: item?.spectatorEmoji || "🤖" };
+    const handQueue = raised.length ? `<section class="suggestions hand-queue"><h2>RAISED HANDS</h2>${raised.map(item => `<div><span>${suggestionAvatar(item).emoji} ${item.spectatorName} raised a hand.</span>${canMove && !suggestionsMuted && match.approvedSuggestionMoveCount !== match.moveCount ? `<button data-fb-action="hand-approve" data-spectator-id="${item.spectatorId}">ALLOW TO SUGGEST</button><button data-fb-action="hand-dismiss" data-spectator-id="${item.spectatorId}">DISMISS</button>` : `<small>Waiting for the current player.</small>`}</div>`).join("")}</section>` : "";
+    const spectatorControl = spectator && match.status === "playing" ? `<section class="suggestions"><h2>SPECTATOR SUGGESTION</h2>${!mine ? action("RAISE HAND", "raise-hand", "button button-purple") : mine.status === "raised" ? `<p class="turn-banner">Hand raised. Waiting for the current player.</p>` : mine.status === "approved" ? `<p class="turn-banner">You may suggest one square.</p>` : mine.status === "suggested" ? `<p class="turn-banner">Suggestion submitted.</p>` : `<p class="turn-banner">Request dismissed for this turn.</p>`}<p class="note">One approved suggestion per turn. It never places a formal move.</p></section>` : "";
+    const submittedText = submitted ? `${suggestionAvatar(submitted).emoji} suggests square ${submitted.suggestedCell + 1}.` : "";
+    const assistant = match.assistSpectatorId ? player(match.assistSpectatorId) : null;
+    const assist = terminal && assistant ? `<div class="assist-celebration" role="status"><span>${memberAvatar(assistant).emoji}</span><strong>ASSIST · PLAYER ${assistant.seat + 1}</strong><small>Winning suggestion</small></div>` : "";
+    const identity = me ? `<div class="match-identity"><span aria-label="${memberAvatar(me).label.en}">${memberAvatar(me).emoji}</span><strong>${me.playerId === api.uid ? "YOU · " : ""}PLAYER ${me.seat + 1}</strong><small>${host ? "HOST · " : ""}${spectator ? "SPECTATOR" : "PLAYER"}</small></div>` : "";
+    const controls = room.status === "roundOver" ? (host ? `<div class="game-actions">${action("NEXT ROUND", "next", "button button-primary")}</div>` : `<p class="turn-banner">Waiting for the host to continue this series.</p>`) : seriesOver ? (host ? `<div class="game-actions">${action("START NEXT SERIES", "next-series", "button button-primary")}${action("END PARTY", "end", "button button-ghost")}</div>` : `<p class="turn-banner">WAITING FOR THE HOST TO CHOOSE THE NEXT GAME</p>`) : "";
+    const breakControls = seriesOver ? `<section class="role-break"><h2>SERIES COMPLETE</h2><p class="eyebrow">SERIES BREAK</p>${host?`<fieldset class="game-picker"><legend>PLAY AGAIN OR CHOOSE ANOTHER GAME</legend>${Object.values(GAMES).map(game=>`<button data-fb-action="select-game" data-game-type="${game.id}" class="game-card ${normalizeGameType(room.selectedGameType)===game.id?"selected":""}" aria-pressed="${normalizeGameType(room.selectedGameType)===game.id}"><strong>${game.name}</strong>${normalizeGameType(room.selectedGameType)===game.id?"<b>SELECTED</b>":""}</button>`).join("")}</fieldset>`:""}${me?.role === "spectator" ? action(me.requestedRole === "player" ? "PLAYER REQUEST PENDING" : "JOIN PLAYER QUEUE", "request-player", "button button-purple") : action("BECOME SPECTATOR NEXT SERIES", "request-spectator", "button button-ghost")}<p class="note">Seat, avatar, role and Party Score stay in this Party Room.</p>${host ? room.players.filter(item => item.requestedRole === "player").map(item => `<button class="role-toggle" data-fb-action="role" data-player-id="${item.playerId}" data-role="player">APPROVE ${item.emoji} AS PLAYER</button>`).join("") : ""}</section>` : "";
+    const scoreA = series?.winsByPlayer?.[series.playerA] || 0, scoreB = series?.winsByPlayer?.[series.playerB] || 0;
+    const invite = `<details class="match-invite"><summary>ROOM ${room.roomCode}</summary><div><button data-fb-action="copy-code" data-code="${room.roomCode}">COPY CODE</button><a href="${spectatorInviteUrl(room.roomCode)}" rel="noopener noreferrer">INVITE SPECTATORS</a><p>Friends can join as spectators while the game is running.</p></div></details>`;
+    const board = match.board.map((mark,index) => { const isSuggested = submitted?.suggestedCell === index; const canSuggest = spectator && mine?.status === "approved" && !mark && match.status === "playing"; const label = `Square ${index + 1}${mark ? `, ${mark}` : ""}${winning.has(index) ? ", winning line" : ""}${isSuggested ? `, ${submittedText}` : ""}`; return `<button class="cell ${winning.has(index) ? "winner" : ""} ${isSuggested ? "suggested" : ""}" aria-label="${label}" data-fb-action="${canSuggest ? "suggest-cell" : "cell"}" data-index="${index}" data-mark="${mark || ""}" ${(!canMove && !canSuggest) || mark ? "disabled" : ""}>${mark || ""}${isSuggested ? `<span class="suggestion-halo" aria-hidden="true">✋${suggestionAvatar(submitted).emoji}</span>` : ""}</button>`; }).join("");
+    shell(`${invite}${identity}<header class="game-header"><p class="eyebrow">${active ? "PLAYER" : "SPECTATOR"}${host ? " · HOST" : ""} · YOU</p><h1>${title}</h1>${lobbyNotice ? `<div class="turn-banner" role="status">${lobbyNotice}</div>` : ""}${spectator ? `<div class="turn-banner">YOU ARE SPECTATING · BOARD IS READ ONLY</div>` : ""}<div class="series-score" aria-label="Series score ${scoreA} to ${scoreB}"><strong>SERIES: ${scoreA}–${scoreB}</strong><span>ROUND: ${match.seriesRoundNumber || 1}</span><span>FIRST TO ${series?.targetWins || room.settings.seriesTargetWins || 2} WINS</span></div></header><div class="matchup"><div class="player">${memberAvatar(player(match.playerX) || {}).emoji}<strong>X</strong></div><strong>VS</strong><div class="player">${memberAvatar(player(match.playerO) || {}).emoji}<strong>O</strong></div></div><div class="board" role="grid" aria-label="Tic-Tac-Toe board">${board}</div><p class="status" role="status">${status}</p><p class="sr-status" aria-live="polite">${submittedText}</p>${assist}${handQueue}${spectatorControl}${breakControls}${controls}${action("LEAVE VIEW", "home", "button button-ghost")}`, "practice");
   }
-  async function open(id) { roomId = id; stopWatch?.(); stopWatch = api.watch(id, value => { connection = "synced"; room = value; renderRoom(); }, renderError); }
+  function renderGomokuMatch(host,match){
+    const player=id=>room.players.find(item=>item.playerId===id),me=player(api.uid),spectator=me?.role==="spectator",active=[match.playerBlack,match.playerWhite].includes(api.uid),expected=match.currentTurn==="black"?match.playerBlack:match.playerWhite,canMove=match.status==="playing"&&expected===api.uid;
+    let state;try{state=gomokuStateFromMoves(room.moves||[]);}catch{state=createGomokuPractice();}
+    if(match.status!=="playing")state={...state,status:match.status,winner:match.winner,winningLine:state.winningLine||[]};
+    const series=room.series,seriesOver=["seriesOver","seriesBreak"].includes(room.status),winnerId=match.winner==="black"?match.playerBlack:match.winner==="white"?match.playerWhite:null,winnerPlayer=player(winnerId);
+    const title=seriesOver?(series?.status==="draw"?"SERIES DRAW":`${memberAvatar(player(series?.winnerId)||{}).emoji} SERIES WIN`):match.status==="draw"?"ROUND DRAW":match.status==="won"?`${memberAvatar(winnerPlayer||{}).emoji} ROUND WIN`:canMove?"YOUR TURN":active?"OPPONENT'S TURN":"LIVE SPECTATOR VIEW";
+    const current=(room.suggestions||[]).filter(item=>item.moveCount===match.moveCount),raised=current.filter(item=>item.status==="raised"),submitted=current.find(item=>item.status==="suggested"),mine=current.find(item=>item.spectatorId===api.uid),suggestionAvatar=item=>avatarById(item?.spectatorAvatarId)||{emoji:item?.spectatorEmoji||"🤖"};
+    const handQueue=raised.length?`<section class="suggestions hand-queue"><h2>RAISED HANDS</h2>${raised.map(item=>`<div><span>${suggestionAvatar(item).emoji} ${item.spectatorName} raised a hand.</span>${canMove&&match.approvedSuggestionMoveCount!==match.moveCount?`<button data-fb-action="hand-approve" data-spectator-id="${item.spectatorId}">ALLOW TO SUGGEST</button><button data-fb-action="hand-dismiss" data-spectator-id="${item.spectatorId}">DISMISS</button>`:`<small>Waiting for the current player.</small>`}</div>`).join("")}</section>`:"";
+    const spectatorControl=spectator&&match.status==="playing"?`<section class="suggestions"><h2>SPECTATOR SUGGESTION</h2>${!mine?action("RAISE HAND","raise-hand","button button-purple"):mine.status==="raised"?'<p class="turn-banner">Hand raised. Waiting for the current player.</p>':mine.status==="approved"?'<p class="turn-banner">You may suggest one empty intersection.</p>':mine.status==="suggested"?'<p class="turn-banner">Suggestion submitted.</p>':'<p class="turn-banner">Request dismissed for this turn.</p>'}<p class="note">A suggestion never places a formal stone.</p></section>`:"";
+    const suggestion=submitted&&Number.isInteger(submitted.suggestedRow)?{row:submitted.suggestedRow,column:submitted.suggestedColumn}:null,canSuggest=spectator&&mine?.status==="approved"&&match.status==="playing";
+    const board=renderGomokuBoard({state,canMove,canSuggest,suggested:suggestion,zoom:gomokuZoom});
+    const scoreA=series?.winsByPlayer?.[series.playerA]||0,scoreB=series?.winsByPlayer?.[series.playerB]||0,terminal=match.status!=="playing";
+    const assistSuggestion=terminal?(room.suggestions||[]).find(item=>item.status==="suggested"&&item.moveCount===match.moveCount-1&&item.suggestedRow===match.lastMoveRow&&item.suggestedColumn===match.lastMoveColumn):null,assistant=assistSuggestion?player(assistSuggestion.spectatorId):null,assist=terminal&&assistant?`<div class="assist-celebration" role="status"><span>${memberAvatar(assistant).emoji}</span><strong>ASSIST · PLAYER ${assistant.seat+1}</strong><small>Winning Gomoku suggestion</small></div>`:"";
+    const gamePicker=seriesOver&&host?`<fieldset class="game-picker"><legend>PLAY AGAIN OR CHOOSE ANOTHER GAME</legend>${Object.values(GAMES).map(game=>`<button data-fb-action="select-game" data-game-type="${game.id}" class="game-card ${normalizeGameType(room.selectedGameType)===game.id?"selected":""}" aria-pressed="${normalizeGameType(room.selectedGameType)===game.id}"><strong>${game.name}</strong><span>${game.description}</span>${normalizeGameType(room.selectedGameType)===game.id?"<b>SELECTED</b>":""}</button>`).join("")}</fieldset>`:"";
+    const roleBreak=seriesOver?`<section class="role-break"><h2>NEXT SERIES PLAYER POOL</h2>${me?.role==="spectator"?action(me.requestedRole==="player"?"PLAYER REQUEST PENDING":"JOIN PLAYER QUEUE","request-player","button button-purple"):action("BECOME SPECTATOR NEXT SERIES","request-spectator","button button-ghost")}${host?room.players.filter(item=>item.requestedRole==="player").map(item=>`<button class="role-toggle" data-fb-action="role" data-player-id="${item.playerId}" data-role="player">APPROVE ${item.emoji} AS PLAYER</button>`).join(""):""}<p class="note">Seat, avatar and Party Score stay unchanged across games.</p></section>`:"";
+    const controls=room.status==="roundOver"?(host?`<div class="game-actions">${action("NEXT ROUND","next","button button-primary")}</div>`:'<p class="turn-banner">Waiting for the host to continue this series.</p>'):seriesOver?(host?`${gamePicker}<div class="game-actions">${action("START NEXT SERIES","next-series","button button-primary")}${action("END PARTY","end","button button-ghost")}</div>`:'<p class="turn-banner">WAITING FOR THE HOST TO CHOOSE THE NEXT GAME</p>'):"";
+    const invite=`<details class="match-invite"><summary>ROOM ${room.roomCode}</summary><div><button data-fb-action="copy-code" data-code="${room.roomCode}">COPY CODE</button><a href="${spectatorInviteUrl(room.roomCode)}" rel="noopener noreferrer">INVITE SPECTATORS</a><p>Friends can join as spectators while the game is running.</p></div></details>`;
+    const status=match.status==="draw"?"DRAW · BOTH PLAYERS +1 POINT":terminal?`${(match.winner||"").toUpperCase()} WINS · +3 POINTS`:match.currentTurn==="black"?"BLACK TO MOVE":"WHITE TO MOVE";
+    shell(`${invite}<header class="game-header"><p class="eyebrow">CASUAL GOMOKU · CONNECT FIVE</p><h1>${title}</h1><div class="gomoku-rules"><strong>15×15 · CONNECT FIVE OR MORE</strong><span>NO FORBIDDEN-MOVE RULES</span></div>${spectator?'<div class="turn-banner">YOU ARE SPECTATING · BOARD IS READ ONLY</div>':""}<div class="series-score" aria-label="Series score ${scoreA} to ${scoreB}"><strong>SERIES: ${scoreA}–${scoreB}</strong><span>ROUND: ${match.seriesRoundNumber||1}</span></div></header><div class="matchup"><div class="player">${memberAvatar(player(match.playerBlack)||{}).emoji}<strong>BLACK${match.playerBlack===api.uid?" · YOU":""}</strong></div><strong>VS</strong><div class="player">${memberAvatar(player(match.playerWhite)||{}).emoji}<strong>WHITE${match.playerWhite===api.uid?" · YOU":""}</strong></div></div><div class="gomoku-tools" aria-label="Gomoku board controls"><button data-fb-action="gomoku-zoom-out">ZOOM OUT</button><button data-fb-action="gomoku-center">CENTER BOARD</button><button data-fb-action="gomoku-zoom-in">ZOOM IN</button></div>${board}<p class="status" role="status">${status}</p>${submitted&&suggestion?`<p class="turn-banner">${suggestionAvatar(submitted).emoji} suggests row ${suggestion.row+1}, column ${suggestion.column+1}.</p>`:""}${assist}${handQueue}${spectatorControl}${roleBreak}${controls}${action("LEAVE VIEW","home","button button-ghost")}`,"practice gomoku-screen");
+  }
+  function renderPodium() {
+    const leaders = [...room.players].sort((a, b) => b.partyScore - a.partyScore || a.seat - b.seat).slice(0, 3);
+    shell(`<header class="game-header"><p class="eyebrow">Great game, everyone! 💗</p><h1>Party Podium</h1></header><div class="podium">${leaders.map((player, index) => `<div class="podium-place"><span>${memberAvatar(player).emoji}</span><strong>#${index + 1} · PLAYER ${player.seat + 1}</strong><b>${player.partyScore} pts</b>${player.playerId === api.uid ? "<small>YOU</small>" : ""}</div>`).join("")}</div>${action("BACK HOME", "home", "button button-primary")}`);
+  }
+  function rememberRoom(id) { sessionStorage.setItem(sessionKey, id); }
+  function forgetRoom() { sessionStorage.removeItem(sessionKey); }
+  function stopRealtime() { stopWatch?.(); stopWatch = null; clearTimeout(reconnectTimer); clearInterval(healthTimer); }
+  function mergeProbe(value) {
+    room = { ...room, ...value, players: value.players || room?.players || [] };
+    connection = "synced"; reconnectAttempt = 0; renderRoom();
+  }
+  function scheduleReconnect() {
+    clearTimeout(reconnectTimer);
+    if (!api || !roomId || !navigator.onLine) return;
+    const delay = Math.min(1000 * (2 ** reconnectAttempt++), 10000);
+    reconnectTimer = setTimeout(() => restartRealtime(), delay);
+  }
+  function isTerminalRoomError(error) {
+    return ["permission-denied", "not-found"].includes(error?.code);
+  }
+  function watchError(error) {
+    if (isTerminalRoomError(error)) {
+      stopRealtime(); forgetRoom(); room = null; roomId = null; connection = "error";
+      renderHome("Previous room is no longer available to this device."); return;
+    }
+    connection = navigator.onLine ? "connecting" : "offline";
+    if (room) renderRoom();
+    scheduleReconnect();
+  }
+  function startHealthCheck() {
+    clearInterval(healthTimer);
+    healthTimer = setInterval(async () => {
+      if (!api || !roomId || !room || !navigator.onLine || document.hidden || room.status === "lobby") return;
+      try { mergeProbe(await api.probe(roomId)); }
+      catch { scheduleReconnect(); }
+    }, 15000);
+  }
+  function restartRealtime() {
+    if (!api || !roomId) return;
+    stopWatch?.(); connection = navigator.onLine ? "connecting" : "offline"; renderRoom();
+    stopWatch = api.watch(roomId, value => {
+      const prior = room;
+      if (waitingPractice && prior?.status === "lobby" && value.status === "lobby" && (prior.players?.length !== value.players?.length || prior.players?.some((player,index)=>player.role !== value.players?.[index]?.role))) lobbyNotice = "Lobby players or roles changed while you practiced.";
+      if(waitingPractice&&normalizeGameType(value.selectedGameType)!==waitingPracticeGameType){waitingPractice=false;cancelWaitingComputerMove();lobbyNotice=`The host selected ${gameDefinition(value.selectedGameType).name}. Previous practice closed safely.`;}
+      if (value.status !== "lobby") { const leftPractice = waitingPractice || prior?.status === "lobby"; waitingPractice = false; cancelWaitingComputerMove(); if (leftPractice) lobbyNotice = "Formal series started — practice closed automatically."; }
+      clearTimeout(reconnectTimer); reconnectAttempt = 0; connection = "synced"; room = value; renderRoom();
+    }, watchError);
+  }
+  async function open(id) {
+    roomId = id; rememberRoom(id); restartRealtime(); startHealthCheck();
+  }
 
   container.addEventListener("click", async event => {
     const target = event.target.closest("[data-fb-action]"); if (!target) return;
     try {
       const name = target.dataset.fbAction;
       if (name === "local") location.href = `${location.pathname}?backend=local`;
-      if (name === "home") { stopWatch?.(); room = null; roomId = null; renderHome(); }
-      if (name === "join") renderJoin();
-      if (name === "create") { target.disabled = true; await open(await api.create(generateRoomCode())); }
-      if (name === "join-submit") { target.disabled = true; await open(await api.join(document.querySelector("#fb-code").value.trim().toUpperCase())); }
+      if (name === "home") { stopRealtime(); forgetRoom(); room = null; roomId = null; setPendingEntry(null); lobbyNotice = ""; waitingPractice = false; cancelWaitingComputerMove(); renderHome(); }
+      if (name === "join") { setPendingEntry(null); renderJoin(); }
+      if (name === "create") { setPendingEntry({ mode: "create" }); renderAvatarPicker(); }
+      if (name === "join-continue") { target.disabled = true; const code = document.querySelector("#fb-code").value; const preview = await api.preview(code); if (preview.memberCount >= preview.maxMembers) throw new Error("Room is full (8/8)"); const defaultRole = new URLSearchParams(location.search).get("role") === "spectator" ? "spectator" : "player"; setPendingEntry({ mode: "join", code, preview, role: preview.spectatorOnly ? "spectator" : defaultRole }); renderAvatarPicker(); }
+      if (name === "avatar-randomize") { chooseAvatar(randomAvatar(selectedAvatar.id)); renderAvatarPicker(); }
+      if (name === "avatar-pick") { const avatar = avatarById(target.dataset.avatarId); if (avatar) chooseAvatar(avatar); renderAvatarPicker(); }
+      if (name === "avatar-role") { setPendingEntry({ ...pendingEntry, role: target.dataset.role }); renderAvatarPicker(); }
+      if (name === "avatar-confirm") {
+        target.disabled = true; lobbyNotice = "";
+        if (pendingEntry?.mode === "create") await open(await api.create(null, selectedAvatar.id));
+        else if (pendingEntry?.mode === "join") { const result = await api.join(pendingEntry.code, pendingEntry.preview.spectatorOnly ? "spectator" : pendingEntry.role, selectedAvatar.id); lobbyNotice = result.reason === "gameStarted" ? "Game already started. You joined as a spectator." : result.reason === "playerPoolFull" ? "Player pool is full. You joined as a spectator." : `Joined as ${result.role}.`; await open(result.roomId); }
+      }
       if (name === "start") { target.disabled = true; await api.start(roomId); }
       if (name === "cell") { target.disabled = true; await api.move(roomId, room.currentMatchId, Number(target.dataset.index)); }
-    } catch (error) { renderError(error); }
+      if (name === "select-game") { target.disabled = true; await api.updateSelectedGame(roomId,target.dataset.gameType); }
+      if (name === "gomoku-cell") { target.disabled = true; await api.moveGomoku(roomId,room.currentMatchId,Number(target.dataset.row),Number(target.dataset.column)); }
+      if (name === "next") { target.disabled = true; await api.nextMatch(roomId); }
+      if (name === "next-series") { target.disabled = true; await api.nextSeries(roomId); }
+      if (name === "end") { target.disabled = true; await api.endParty(roomId); }
+      if (name === "series-setting") { target.disabled = true; await api.updateSeriesSetting(roomId, Number(target.dataset.targetWins)); }
+      if (name === "role") { target.disabled = true; await api.setRole(roomId, target.dataset.playerId, target.dataset.role); }
+      if (name === "request-player") { target.disabled = true; await api.requestRole(roomId, "player"); }
+      if (name === "request-spectator") { target.disabled = true; await api.requestRole(roomId, "spectator"); }
+      if (name === "waiting-practice") { waitingPracticeGameType=normalizeGameType(room.selectedGameType);difficultySessionKey=`cyberTable.waitingPracticeDifficulty.${waitingPracticeGameType}`;firstPlayerSessionKey=`cyberTable.waitingPracticeFirstPlayer.${waitingPracticeGameType}`;waitingDifficulty=normalizePracticeDifficulty(sessionStorage.getItem(difficultySessionKey)??PRACTICE_DIFFICULTY_DEFAULT);firstPlayerState=restoreFirstPlayerState(JSON.parse(sessionStorage.getItem(firstPlayerSessionKey)||"{}"));waitingPractice = true; lobbyNotice = "Lobby remains connected. Practice does not affect party scores."; startWaitingRound(); }
+      if (name === "waiting-practice-reset") { startWaitingRound(); }
+      if (name === "return-lobby") { waitingPractice = false; cancelWaitingComputerMove(); renderRoom(); }
+      if (name === "waiting-cell") { waitingGame = makeMove(waitingGame, Number(target.dataset.index)); finishWaitingRoundIfNeeded(); renderWaitingPractice(); if (waitingGame.status === "playing") scheduleWaitingComputerMove(); }
+      if(name==="waiting-gomoku-cell"){waitingGame=applyGomokuPracticeMove(waitingGame,Number(target.dataset.row),Number(target.dataset.column));finishWaitingRoundIfNeeded();renderWaitingPractice();if(waitingGame.status==="playing")scheduleWaitingComputerMove();}
+      if (name === "raise-hand") { target.disabled = true; await api.raiseHand(roomId, room.currentMatchId); }
+      if (name === "suggest-cell") { target.disabled = true; await api.suggestCell(roomId, room.currentMatchId, Number(target.dataset.index)); }
+      if(name==="suggest-gomoku"){target.disabled=true;await api.suggestGomoku(roomId,room.currentMatchId,Number(target.dataset.row),Number(target.dataset.column));}
+      if (name === "hand-approve") { target.disabled = true; await api.reviewHand(roomId, room.currentMatchId, target.dataset.spectatorId, "approved"); }
+      if (name === "hand-dismiss") { target.disabled = true; await api.reviewHand(roomId, room.currentMatchId, target.dataset.spectatorId, "dismissed"); }
+      if (name === "suggest-mute") { target.disabled = true; await api.muteSuggestions(roomId, room.currentMatchId); }
+      if (name === "copy-code") { await navigator.clipboard.writeText(target.dataset.code); lobbyNotice = `Copied room code ${target.dataset.code}.`; renderRoom(); }
+      if(name==="gomoku-zoom-in"){gomokuZoom=Math.min(1.8,gomokuZoom+.2);renderRoom();}
+      if(name==="gomoku-zoom-out"){gomokuZoom=Math.max(.75,gomokuZoom-.2);renderRoom();}
+      if(name==="gomoku-center"){gomokuZoom=1;renderRoom();container.querySelector('.gomoku-viewport')?.scrollTo({top:0,left:0,behavior:'smooth'});}
+    } catch (error) {
+      if (pendingEntry) renderAvatarPicker(error.message, error.code === "avatar-taken" ? error.availableAvatarIds : []);
+      else if (document.querySelector("#fb-code")) renderJoin(error.message);
+      else renderError(error);
+    }
   });
-  addEventListener("offline", () => { connection = "offline"; room ? renderRoom() : renderHome(); });
-  addEventListener("online", () => { connection = "connecting"; room ? renderRoom() : renderHome(); });
+  container.addEventListener("input", event => {
+    const target = event.target.closest('[data-fb-input="practice-difficulty"]');
+    if (!target) return;
+    waitingDifficulty = normalizePracticeDifficulty(target.value);
+    sessionStorage.setItem(difficultySessionKey, String(waitingDifficulty));
+    if (waitingPractice && waitingGame.status === "playing" && waitingGame.currentTurn === waitingComputerStone) scheduleWaitingComputerMove();
+    const levelName = difficultyName(waitingDifficulty);
+    target.setAttribute("aria-valuetext", `Level ${waitingDifficulty} of 10, ${levelName.toLowerCase()}`);
+    const output = container.querySelector('output[for="practice-difficulty"]');
+    if (output) output.textContent = `LEVEL ${waitingDifficulty} · ${levelName}`;
+    const aiStrength=container.querySelector(".ai-strength-note");if(aiStrength)aiStrength.textContent=gomokuDifficultySummary(waitingDifficulty);
+  });
+  container.addEventListener("keydown", event => {
+    const gomokuTarget=event.target.closest(".gomoku-point:not([disabled])");
+    if(gomokuTarget){
+      if(["Enter"," "].includes(event.key)){event.preventDefault();gomokuTarget.click();return;}
+      const offsets={ArrowLeft:[0,-1],ArrowRight:[0,1],ArrowUp:[-1,0],ArrowDown:[1,0]},offset=offsets[event.key];
+      if(offset){event.preventDefault();let row=Number(gomokuTarget.dataset.row)+offset[0],column=Number(gomokuTarget.dataset.column)+offset[1];while(row>=0&&row<15&&column>=0&&column<15){const next=container.querySelector(`.gomoku-point[data-row="${row}"][data-column="${column}"]:not([disabled])`);if(next){next.focus();break;}row+=offset[0];column+=offset[1];}return;}
+    }
+    const modeTarget = event.target.closest('[data-fb-input="first-player-mode"]');
+    if (modeTarget && ["ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown"].includes(event.key)) {
+      event.preventDefault();
+      const modes = [FIRST_PLAYER_MODES.ALTERNATE, FIRST_PLAYER_MODES.ALWAYS_PLAYER, FIRST_PLAYER_MODES.ALWAYS_COMPUTER];
+      const direction = ["ArrowLeft", "ArrowUp"].includes(event.key) ? -1 : 1;
+      const nextMode = modes[(modes.indexOf(modeTarget.value) + direction + modes.length) % modes.length];
+      const nextInput = container.querySelector(`[data-fb-input="first-player-mode"][value="${nextMode}"]`);
+      nextInput.checked = true;
+      nextInput.dispatchEvent(new Event("change", { bubbles: true }));
+      return;
+    }
+    const target = event.target.closest('[data-fb-input="practice-difficulty"]');
+    if (!target) return;
+    const current = normalizePracticeDifficulty(target.value);
+    const next = ({ ArrowLeft: current - 1, ArrowDown: current - 1, ArrowRight: current + 1, ArrowUp: current + 1, PageDown: current - 2, PageUp: current + 2, Home: 1, End: 10 })[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    target.value = String(Math.min(10, Math.max(1, next)));
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  container.addEventListener("change", event => {
+    const target = event.target.closest('[data-fb-input="first-player-mode"]');
+    if (!target) return;
+    const boardIsEmpty = waitingGame.moveCount === 0;
+    firstPlayerState = changeFirstPlayerMode(firstPlayerState, target.value, boardIsEmpty);
+    saveFirstPlayerState();
+    if (boardIsEmpty) {
+      resetEmptyWaitingRound();
+    } else renderWaitingPractice();
+  });
+  addEventListener("offline", () => { clearTimeout(reconnectTimer); connection = "offline"; room ? renderRoom() : renderHome(); });
+  addEventListener("online", () => { connection = "connecting"; room ? renderRoom() : renderHome(); restartRealtime(); });
+  addEventListener("visibilitychange", () => { if (!document.hidden && roomId && navigator.onLine) restartRealtime(); });
 
   renderHome();
   try {
     const deviceId = sessionStorage.getItem("cyberTable.emulatorDevice") || crypto.randomUUID();
     sessionStorage.setItem("cyberTable.emulatorDevice", deviceId);
     const services = await createFirebaseServices({ config, emulator, appName: `cyber-table-${emulator ? "emulator" : "production"}-${deviceId}` });
-    api = createFirebaseRoomService(services); connection = "synced"; renderHome();
+    api = createFirebaseRoomService(services);
+    const rememberedRoom = sessionStorage.getItem(sessionKey);
+    if (rememberedRoom) {
+      try {
+        if (navigator.onLine) await api.resume(rememberedRoom);
+        await open(rememberedRoom);
+      }
+      catch (error) {
+        if (!navigator.onLine || ["unavailable", "auth/network-request-failed"].includes(error?.code)) {
+          connection = navigator.onLine ? "connecting" : "offline";
+          renderHome("Restoring your previous room when the connection returns…");
+          await open(rememberedRoom);
+        } else {
+          forgetRoom(); connection = "synced";
+          renderHome(`Previous room could not be restored: ${error.message}`);
+        }
+      }
+    } else { connection = "synced"; pendingEntry ? renderAvatarPicker() : new URLSearchParams(location.search).has("room") ? renderJoin() : renderHome(); }
   }
   catch (error) { renderError(error); }
 }
