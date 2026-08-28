@@ -1,0 +1,6 @@
+import { BOARD_SIZE, indexOf } from "./rules.js";
+
+export function renderGomokuBoard({ state, canMove=false, canSuggest=false, suggested=null, zoom=1 }) {
+  const winning=new Set((state.winningLine||[]).map(({row,column})=>indexOf(row,column)));
+  return `<div class="gomoku-viewport"><div class="gomoku-board" style="width:${zoom*100}%" role="grid" aria-label="Gomoku board">${state.board.map((stone,index)=>{const row=Math.floor(index/BOARD_SIZE),column=index%BOARD_SIZE,last=state.lastMove?.row===row&&state.lastMove?.column===column,isSuggested=suggested?.row===row&&suggested?.column===column,interactive=!stone&&(canMove||canSuggest),action=canSuggest?"suggest-gomoku":"gomoku-cell";const label=`Row ${row+1}, column ${column+1}, ${stone?`${stone} stone`:`empty`}${last?", last move":""}${winning.has(index)?", winning line":""}${isSuggested?", spectator suggestion":""}`;return `<button role="gridcell" class="gomoku-point ${stone||"empty"} ${last?"last-move":""} ${winning.has(index)?"winner":""} ${isSuggested?"suggested":""}" aria-label="${label}" data-fb-action="${interactive?action:"gomoku-readonly"}" data-row="${row}" data-column="${column}" ${interactive?"":"disabled"}>${stone?`<span aria-hidden="true"></span>`:""}${last?'<i aria-hidden="true">LAST</i>':""}${isSuggested?'<b aria-hidden="true">✋</b>':""}</button>`;}).join("")}</div></div>`;
+}

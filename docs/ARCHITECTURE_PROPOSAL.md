@@ -1,6 +1,6 @@
 # Cyber Table v1 架构提案（确认前草案）
 
-状态：视觉方向已更新并确认采用“家庭友好 Cyberpunk”，第 10 节产品决策已确认；增加简单电脑单人练习。当前阶段仅制作本地原型，不创建或部署 Firebase 项目，不创建 GitHub 远程仓库，不合并 `main`。
+状态：视觉方向采用“家庭友好 Cyberpunk”；独立 Spark Firebase 项目与 GitHub 仓库已建立。正式多人生命周期使用事务化终局结算、轮换与 Podium；任何新功能仍通过独立分支和 Draft PR 验证后发布。
 
 视觉基准保存在 `docs/design/family-friendly-cyberpunk-reference.png`：深蓝夜空背景，柔和天蓝、薰衣草紫、薄荷绿、珊瑚粉和暖黄色；圆润厚实的卡片与大按钮；可爱机器人、熊猫、兔子等身份；轻微星星装饰。保留 Cyberpunk 的数字街机感，但避免刺眼霓虹、尖锐造型、强故障效果和压迫性的竞技表达。
 
@@ -173,3 +173,26 @@ roomCodes/{roomCode}
 3. 编写并用 Firebase Emulator 验证 Firestore Rules 与多客户端流程。
 4. 在进行任何远程操作前，再次列出目标；经明确确认后才重新登录 GitHub、创建公开仓库并推送开发分支。
 5. Firebase 项目创建、生产 Rules/Indexes 部署、GitHub Pages 和合并 `main` 均分别等待确认。
+# Series, Lobby Roles, and Suggestions (schema v3)
+
+The Firebase multiplayer model layers a bounded series over individual Tic-Tac-Toe matches:
+
+- `rooms/{roomId}` stores `currentSeriesId`, `currentMatchId`, global round/series counters, member totals, and Lobby-locked settings (`seriesTargetWins`, `maxSeriesRounds`, `maxActivePlayers`).
+- `rooms/{roomId}/series/{seriesId}` stores the fixed pair, wins keyed by UID, rounds played, target/max rounds, status, winner, and pairing rotation index.
+- `rooms/{roomId}/matches/{matchId}` retains the authoritative board and score idempotency fields and adds `seriesId`, `seriesRoundNumber`, and the move-count value for suggestion muting.
+- Player documents retain stable `seat` and Party Score while adding `role` and `roleUpdatedAt`. Missing legacy roles are interpreted as `player`.
+- `rooms/{roomId}/matches/{matchId}/suggestions/{spectatorUid}` provides one replaceable structured suggestion per spectator and turn. It is never consulted as authorization for a formal move.
+
+All series creation, round settlement, Party Score updates, role changes, and suggestion resolution use Firestore transactions. Security Rules independently validate membership, host/current-player authority, score idempotency, role locks, empty suggested cells, and move-count freshness. Lobby practice remains entirely local while the room listeners stay active.
+
+New room codes use five characters from `ABCDEFGHJKMNPQRSTUVWXYZ23456789`. Normalization removes whitespace and hyphens and uppercases input; reads continue to accept legacy five-character alphanumeric mappings. A room-code mapping is an expiring join locator, not an authentication secret.
+
+# Unified Player/Spectator Entry (schema v4)
+
+Player and spectator identities now enter through the same room-code mapping. `role=player|spectator` in a share URL is only a requested default. The join transaction reads the authoritative room status and capacity: Lobby joins may enter either pool, while `playing`, `roundOver`, and series lifecycle states accept new members only as spectators. Rejoining the same anonymous UID is idempotent.
+
+New room documents maintain `memberCount`, `playerCount`, and `spectatorCount`, with `playerCount + spectatorCount == memberCount`, plus `settings.maxMembers = 8` and the existing `settings.maxActivePlayers`. The same transaction updates `memberIds`, the three counters, the stable next `seat`, and the member document. Legacy `activePlayerCount` remains mirrored during migration.
+
+Member documents add `requestedRole` and `joinedDuringSeries`. Members who arrive after the Lobby are spectator-only for that series. When a series settles, the room enters `seriesBreak`: spectators may request the player queue, players may step back to spectate, and the host may approve the next pool without changing seats or previously earned Party Score. `NEXT SERIES` pairs only confirmed `role == player` members and is transactionally exclusive with role changes.
+
+Terminal board validation and score application are intentionally separated into two protected transactions. The first commits exactly one legal terminal cell while leaving `scoreApplied == false`; the second atomically flips `scoreApplied`, applies exact Party Score deltas, settles the series, and enters `roundOver` or `seriesBreak`. This preserves exactly-once settlement while keeping the complete Rules evaluation below Firestore's expression limit.
