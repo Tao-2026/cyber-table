@@ -8,6 +8,14 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Added
 
+- A reusable Party Room game picker lets the host choose Tic-Tac-Toe or Casual Gomoku in the Lobby and again between series without changing the room code, membership, stable seats, avatars, roles, or Party Score.
+- A pure multi-game registry now exposes shared rule, legal-move, state-validation, practice, and board-rendering boundaries for both games while preserving a legacy-safe Tic-Tac-Toe default.
+- Casual Gomoku adds a 15×15 board, Black-first play, five-or-more wins in all four directions, full winning-run highlights, last-move markers, Black/White identity labels, and no Renju forbidden-move rules.
+- Gomoku supports Single Round, Best of 3, and Best of 5 series, with Black and White swapped after every round and the same cross-game Party Score.
+- Gomoku waiting practice uses its own bounded local AI, 1–10 difficulty, first-player mode, alternating progress, and per-tab session state independently from Tic-Tac-Toe practice.
+- Gomoku intersections support Enter/Space activation and directional-key navigation that skips occupied points.
+- Live Gomoku spectators can join through the same room code, raise a hand, receive current-player approval, and suggest one empty intersection without placing a formal stone.
+- Mobile Gomoku includes a square scrollable board viewport with Zoom In, Zoom Out, and Center Board controls for reliable 15×15 interaction.
 - Lobby waiting practice now alternates the first player between the player and computer after each completed game by default.
 - A three-option First Player control allows `ALTERNATE`, `ALWAYS YOU`, or `ALWAYS COMPUTER`; its mode and alternating progress remain local to the current browser tab.
 - Computer-first practice uses the current 1–10 difficulty, while rapid mode changes, leaving practice, and formal-series startup cancel stale computer tasks.
@@ -28,6 +36,9 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Changed
 
+- Room, series, and match documents now distinguish the host's `selectedGameType` from the transaction-locked `activeGameType`; legacy rooms and links safely default to Tic-Tac-Toe.
+- Gomoku online boards are reconstructed from immutable sequential move documents rather than a client-replaceable 225-cell board.
+- Realtime recovery waits for the Gomoku match and its complete move snapshot before rendering, preventing a temporarily empty or wrong-game board during listener reordering.
 - The current product interface is English-only across home, avatar, room, Lobby, practice, match, spectator, series, results, Podium, error, toast, sharing, and accessibility surfaces while retaining the localization structure for future use.
 - Waiting-practice difficulty remains local to the current browser tab and never changes Firestore room, member, score, or formal-match data.
 - Active Firebase room context is retained per browser tab so refreshes return the same device identity to the same lobby, match, or Podium.
@@ -58,6 +69,12 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Security
 
+- Gomoku moves atomically create one immutable move and update four authoritative 15-cell projections: the affected row, column, descending diagonal, and ascending diagonal.
+- Firestore Rules verify the authenticated current player, assigned Black/White stone, exact next move number, coordinate bounds, one previously empty point in every projection, and all four projection paths in the same transaction.
+- Rules inspect only the last move's four finite directional runs, force the first five-or-more line to become terminal, validate its persisted five-cell witness, and reject forged wins, draws, skipped moves, repeated points, spectator moves, and concurrent second moves within the Spark Rules expression budget.
+- Gomoku score and series settlement reuse the existing idempotent `scoreApplied` transaction; clients cannot independently change winner, Series wins, or Party Score.
+- Completed series atomically set their game-typed `scoreApplied` record once, while unfinished series keep it false.
+- Only the host may select a known game while the room is in Lobby or `seriesBreak`; `activeGameType`, series `gameType`, and match `gameType` must match when a new series starts.
 - Firestore Rules restrict direct role changes to the Lobby or `seriesBreak`, bind all three room counters to member/role transactions, cap total membership at eight, preserve seat and earned Party Score, and prevent in-series promotion.
 - New members may create only their own member document; active-series joins must be spectators, non-members cannot read room subcollections, legacy missing roles continue to resolve safely as players, and schema-v3 counters migrate on the next join.
 - Host spectators retain legitimate host management actions but cannot bypass current-player or player-role checks to submit a board move.
@@ -66,6 +83,8 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Known Issues
 
+- Casual Gomoku intentionally omits Renju forbidden-move rules and the waiting-practice AI is a bounded family-game opponent, not a professional Gomoku engine.
+- Small phone screens require the provided board viewport and zoom controls for precise 15×15 interaction.
 - Room recovery is intentionally tied to the original browser tab's anonymous identity; clearing browser site data or switching to a different device cannot recover that player's seat.
 - Suggestions are intentionally ephemeral per turn and provide no free-text chat, image upload, history feed, or cross-device identity recovery.
 - Room codes are convenient routing identifiers, not passwords; anyone who receives an active code may join until the eight-member room is full. After play begins, new identities are spectator-only.

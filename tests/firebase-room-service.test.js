@@ -16,6 +16,9 @@ async function playMoves(apisByUid, db, roomId, moves) {
     await apisByUid.get(match.currentTurn === "X" ? match.playerX : match.playerO).move(roomId, room.currentMatchId, index);
   }
 }
+async function playGomokuWin(apisByUid,db,roomId,row=7){
+  for(let offset=0;offset<5;offset+=1){let room=await data(db,"rooms",roomId),match=await data(db,"rooms",roomId,"matches",room.currentMatchId);await apisByUid.get(match.playerBlack).moveGomoku(roomId,room.currentMatchId,row,3+offset);if(offset===4)break;room=await data(db,"rooms",roomId);match=await data(db,"rooms",roomId,"matches",room.currentMatchId);await apisByUid.get(match.playerWhite).moveGomoku(roomId,room.currentMatchId,0,offset);}
+}
 
 test("best-of-three keeps the pair, settles once, and gates next series", async () => {
   const { services, apis } = await identities(2, "series-two"); const [host, guest] = apis; const db = services[0].db;
@@ -172,4 +175,51 @@ test("an adopted winning suggestion records the spectator assist avatar", async 
     room = await data(db, "rooms", roomId); const match = await data(db, "rooms", roomId, "matches", room.currentMatchId);
     assert.equal(match.status, "won"); assert.equal(match.assistSpectatorId, watcher.uid); assert.equal(match.assistAvatarId, "bunny");
   } finally { await Promise.all(services.map(service => deleteApp(service.app))); }
+});
+
+test("Party Room selects Gomoku, syncs spectator suggestions, and swaps Black and White",async()=>{
+  const {services,apis}=await identities(3,"party-gomoku");const [host,guest,spectator]=apis,db=services[0].db,byUid=new Map(apis.map(api=>[api.uid,api]));
+  try{
+    const roomId=await host.create("GOM01","robot");await guest.join("GOM01","player","panda");await spectator.join("GOM01","spectator","bunny");
+    assert.equal((await data(db,"rooms",roomId)).selectedGameType,"tic-tac-toe");await assert.rejects(()=>guest.updateSelectedGame(roomId,"gomoku"),/Host only/);
+    await host.updateSelectedGame(roomId,"gomoku");await host.start(roomId);let room=await data(db,"rooms",roomId),match=await data(db,"rooms",roomId,"matches",room.currentMatchId);
+    assert.deepEqual([room.activeGameType,match.gameType,match.currentTurn],["gomoku","gomoku","black"]);
+    await spectator.raiseHand(roomId,room.currentMatchId);await byUid.get(match.playerBlack).reviewHand(roomId,room.currentMatchId,spectator.uid,"approved");await spectator.suggestGomoku(roomId,room.currentMatchId,7,2);
+    assert.equal((await data(db,"rooms",roomId,"matches",room.currentMatchId,"suggestions",spectator.uid)).suggestedRow,7);
+    await playGomokuWin(byUid,db,roomId);room=await data(db,"rooms",roomId);match=await data(db,"rooms",roomId,"matches",room.currentMatchId);
+    assert.deepEqual([room.status,match.status,match.scoreApplied],["roundOver","won",true]);const firstBlack=match.playerBlack,firstWhite=match.playerWhite;
+    await host.nextMatch(roomId);room=await data(db,"rooms",roomId);match=await data(db,"rooms",roomId,"matches",room.currentMatchId);
+    assert.deepEqual([match.playerBlack,match.playerWhite,match.currentTurn],[firstWhite,firstBlack,"black"]);
+  }finally{await Promise.all(services.map(service=>deleteApp(service.app)));}
+});
+
+test("series break can switch from Gomoku to Tic-Tac-Toe without clearing Party Score",async()=>{
+  const {services,apis}=await identities(2,"party-cross-game");const [host,guest]=apis,db=services[0].db,byUid=new Map(apis.map(api=>[api.uid,api]));
+  try{
+    const roomId=await host.create("CROSS","robot");await guest.join("CROSS","player","panda");await host.updateSeriesSetting(roomId,1);await host.updateSelectedGame(roomId,"gomoku");await host.start(roomId);await playGomokuWin(byUid,db,roomId);
+    let room=await data(db,"rooms",roomId),gomokuMatch=await data(db,"rooms",roomId,"matches",room.currentMatchId),gomokuSeries=await data(db,"rooms",roomId,"series",room.currentSeriesId);assert.equal(room.status,"seriesBreak");assert.deepEqual([gomokuSeries.gameType,gomokuSeries.scoreApplied],["gomoku",true]);const winnerId=gomokuMatch.winner==="black"?gomokuMatch.playerBlack:gomokuMatch.playerWhite,beforeScore=(await data(db,"rooms",roomId,"players",winnerId)).partyScore;
+    await host.updateSelectedGame(roomId,"tic-tac-toe");await host.nextSeries(roomId);room=await data(db,"rooms",roomId);const nextMatch=await data(db,"rooms",roomId,"matches",room.currentMatchId),nextSeries=await data(db,"rooms",roomId,"series",room.currentSeriesId);
+    assert.deepEqual([room.selectedGameType,room.activeGameType,nextMatch.gameType,nextSeries.gameType],["tic-tac-toe","tic-tac-toe","tic-tac-toe","tic-tac-toe"]);assert.equal((await data(db,"rooms",roomId,"players",winnerId)).partyScore,beforeScore);
+  }finally{await Promise.all(services.map(service=>deleteApp(service.app)));}
+});
+
+test("concurrent game selection and start cannot create a mismatched series",async()=>{
+  const {services,apis}=await identities(2,"party-selection-race");const [host,guest]=apis,db=services[0].db;
+  try{
+    const roomId=await host.create("RACE1","robot");await guest.join("RACE1","player","panda");await Promise.allSettled([host.updateSelectedGame(roomId,"gomoku"),host.start(roomId)]);
+    let room=await data(db,"rooms",roomId);if(!room.currentMatchId){await host.start(roomId);room=await data(db,"rooms",roomId);}const match=await data(db,"rooms",roomId,"matches",room.currentMatchId),series=await data(db,"rooms",roomId,"series",room.currentSeriesId);
+    assert.ok(["tic-tac-toe","gomoku"].includes(room.activeGameType));assert.deepEqual([match.gameType,series.gameType],[room.activeGameType,room.activeGameType]);
+  }finally{await Promise.all(services.map(service=>deleteApp(service.app)));}
+});
+
+test("a protected Gomoku suggestion remains available for inferred assist without placing a stone",async()=>{
+  const {services,apis}=await identities(3,"gomoku-assist");const [host,guest,spectator]=apis,db=services[0].db,byUid=new Map(apis.map(api=>[api.uid,api]));
+  try{
+    const roomId=await host.create("GAST1","robot");await guest.join("GAST1","player","panda");await spectator.join("GAST1","spectator","bunny");await host.updateSeriesSetting(roomId,1);await host.updateSelectedGame(roomId,"gomoku");await host.start(roomId);
+    for(let offset=0;offset<4;offset+=1){let room=await data(db,"rooms",roomId),match=await data(db,"rooms",roomId,"matches",room.currentMatchId);await byUid.get(match.playerBlack).moveGomoku(roomId,room.currentMatchId,8,3+offset);room=await data(db,"rooms",roomId);match=await data(db,"rooms",roomId,"matches",room.currentMatchId);await byUid.get(match.playerWhite).moveGomoku(roomId,room.currentMatchId,0,offset);}
+    const room=await data(db,"rooms",roomId),match=await data(db,"rooms",roomId,"matches",room.currentMatchId);await spectator.raiseHand(roomId,room.currentMatchId);await byUid.get(match.playerBlack).reviewHand(roomId,room.currentMatchId,spectator.uid,"approved");await spectator.suggestGomoku(roomId,room.currentMatchId,8,7);
+    assert.equal((await data(db,"rooms",roomId,"matches",room.currentMatchId)).moveCount,8);await byUid.get(match.playerBlack).moveGomoku(roomId,room.currentMatchId,8,7);const terminal=await data(db,"rooms",roomId,"matches",room.currentMatchId),suggestion=await data(db,"rooms",roomId,"matches",room.currentMatchId,"suggestions",spectator.uid);
+    assert.deepEqual([terminal.status,terminal.assistSpectatorId,terminal.assistAvatarId],["won",null,null]);
+    assert.deepEqual([suggestion.status,suggestion.moveCount,suggestion.suggestedRow,suggestion.suggestedColumn],["suggested",8,8,7]);
+  }finally{await Promise.all(services.map(service=>deleteApp(service.app)));}
 });

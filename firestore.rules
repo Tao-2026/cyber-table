@@ -6,6 +6,8 @@ service cloud.firestore {
     function matchPath(roomId, matchId) { return /databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId); }
     function playerPath(roomId, playerId) { return /databases/$(database)/documents/rooms/$(roomId)/players/$(playerId); }
     function seriesPath(roomId, seriesId) { return /databases/$(database)/documents/rooms/$(roomId)/series/$(seriesId); }
+    function movePath(roomId, matchId, moveId) { return /databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/moves/$(moveId); }
+    function projectionPath(roomId,matchId,type,index) { return /databases/$(database)/documents/rooms/$(roomId)/matches/$(matchId)/projections/$(type)/lines/$(index); }
     function room(roomId) { return get(roomPath(roomId)); }
     function isMember(roomId) { return signedIn() && room(roomId).data.memberIds.hasAny([request.auth.uid]); }
     function isHost(roomId) { return signedIn() && room(roomId).data.hostId == request.auth.uid; }
@@ -13,6 +15,60 @@ service cloud.firestore {
     function validAvatarId(id) { return id is string && id in ['robot','panda','bunny','fox','tiger','frog','monkey','dog','cat','koala','penguin','unicorn','octopus','lion','bear','hamster','cool','starstruck','smile','party','cowboy','alien','ghost','teddy']; }
     function storedPlayerCount(data) { return data.keys().hasAny(['playerCount']) ? data.playerCount : (data.keys().hasAny(['activePlayerCount']) ? data.activePlayerCount : data.memberCount); }
     function storedSpectatorCount(data) { return data.keys().hasAny(['spectatorCount']) ? data.spectatorCount : data.memberCount - storedPlayerCount(data); }
+    function validGameType(value) { return value in ['tic-tac-toe','gomoku']; }
+    function roomSelectedGame(data) { return data.keys().hasAny(['selectedGameType']) ? data.selectedGameType : 'tic-tac-toe'; }
+    function roomActiveGame(data) { return data.keys().hasAny(['activeGameType']) && data.activeGameType != null ? data.activeGameType : 'tic-tac-toe'; }
+    function currentPlayer(data) { return data.gameType == 'gomoku' ? (data.currentTurn == 'black' ? data.playerBlack : data.playerWhite) : (data.currentTurn == 'X' ? data.playerX : data.playerO); }
+    function matchPlayers(data) { return data.gameType == 'gomoku' ? [data.playerBlack,data.playerWhite] : [data.playerX,data.playerO]; }
+    function inGomokuBounds(row,column) { return row is int && column is int && row >= 0 && row < 15 && column >= 0 && column < 15; }
+    function validGomokuLine(line) { return line is list && line.size() == 15 && line.toSet().hasOnly([null,'black','white']); }
+    function changedLineCells(before,after) {
+      return (before[0]!=after[0]?1:0)+(before[1]!=after[1]?1:0)+(before[2]!=after[2]?1:0)+(before[3]!=after[3]?1:0)+(before[4]!=after[4]?1:0)
+        +(before[5]!=after[5]?1:0)+(before[6]!=after[6]?1:0)+(before[7]!=after[7]?1:0)+(before[8]!=after[8]?1:0)+(before[9]!=after[9]?1:0)
+        +(before[10]!=after[10]?1:0)+(before[11]!=after[11]?1:0)+(before[12]!=after[12]?1:0)+(before[13]!=after[13]?1:0)+(before[14]!=after[14]?1:0);
+    }
+    function legalLineChange(before,after,index,stone) {
+      return validGomokuLine(before) && validGomokuLine(after) && changedLineCells(before,after)==1
+        && before[index]==null && after[index]==stone;
+    }
+    function fiveFrom(line,start,stone) {
+      return start>=0 && start<=10 && line[start]==stone && line[start+1]==stone && line[start+2]==stone && line[start+3]==stone && line[start+4]==stone;
+    }
+    function backwardRun(line,index,stone) {
+      return index<1 || line[index-1]!=stone ? 0 : 1+(index<2 || line[index-2]!=stone ? 0 : 1+(index<3 || line[index-3]!=stone ? 0 : 1+(index<4 || line[index-4]!=stone ? 0 : 1)));
+    }
+    function forwardRun(line,index,stone) {
+      return index>13 || line[index+1]!=stone ? 0 : 1+(index>12 || line[index+2]!=stone ? 0 : 1+(index>11 || line[index+3]!=stone ? 0 : 1+(index>10 || line[index+4]!=stone ? 0 : 1)));
+    }
+    function fiveAt(line,index,stone) {
+      return backwardRun(line,index,stone)+forwardRun(line,index,stone)>=4;
+    }
+    function affectedWin(roomId,matchId,data,stone) {
+      return fiveAt(getAfter(projectionPath(roomId,matchId,'row',data.lastMoveRow)).data.cells,data.lastMoveColumn,stone)
+        || fiveAt(getAfter(projectionPath(roomId,matchId,'column',data.lastMoveColumn)).data.cells,data.lastMoveRow,stone)
+        || fiveAt(getAfter(projectionPath(roomId,matchId,'down',data.lastMoveRow-data.lastMoveColumn+14)).data.cells,data.lastMoveRow,stone)
+        || fiveAt(getAfter(projectionPath(roomId,matchId,'up',data.lastMoveRow+data.lastMoveColumn)).data.cells,data.lastMoveRow,stone);
+    }
+    function validWinningProjection(roomId,matchId,data,stone) {
+      return (data.winDirection=='row' && fiveFrom(getAfter(projectionPath(roomId,matchId,'row',data.lastMoveRow)).data.cells,data.winStart,stone)
+          && data.winningProofCells==[data.lastMoveRow*15+data.winStart,data.lastMoveRow*15+data.winStart+1,data.lastMoveRow*15+data.winStart+2,data.lastMoveRow*15+data.winStart+3,data.lastMoveRow*15+data.winStart+4])
+        || (data.winDirection=='column' && fiveFrom(getAfter(projectionPath(roomId,matchId,'column',data.lastMoveColumn)).data.cells,data.winStart,stone)
+          && data.winningProofCells==[data.winStart*15+data.lastMoveColumn,(data.winStart+1)*15+data.lastMoveColumn,(data.winStart+2)*15+data.lastMoveColumn,(data.winStart+3)*15+data.lastMoveColumn,(data.winStart+4)*15+data.lastMoveColumn])
+        || (data.winDirection=='down' && fiveFrom(getAfter(projectionPath(roomId,matchId,'down',data.lastMoveRow-data.lastMoveColumn+14)).data.cells,data.winStart,stone)
+          && data.winningProofCells==[data.winStart*15+data.winStart-(data.lastMoveRow-data.lastMoveColumn+14)+14,(data.winStart+1)*15+(data.winStart+1)-(data.lastMoveRow-data.lastMoveColumn+14)+14,(data.winStart+2)*15+(data.winStart+2)-(data.lastMoveRow-data.lastMoveColumn+14)+14,(data.winStart+3)*15+(data.winStart+3)-(data.lastMoveRow-data.lastMoveColumn+14)+14,(data.winStart+4)*15+(data.winStart+4)-(data.lastMoveRow-data.lastMoveColumn+14)+14])
+        || (data.winDirection=='up' && fiveFrom(getAfter(projectionPath(roomId,matchId,'up',data.lastMoveRow+data.lastMoveColumn)).data.cells,data.winStart,stone)
+          && data.winningProofCells==[data.winStart*15+data.lastMoveRow+data.lastMoveColumn-data.winStart,(data.winStart+1)*15+data.lastMoveRow+data.lastMoveColumn-(data.winStart+1),(data.winStart+2)*15+data.lastMoveRow+data.lastMoveColumn-(data.winStart+2),(data.winStart+3)*15+data.lastMoveRow+data.lastMoveColumn-(data.winStart+3),(data.winStart+4)*15+data.lastMoveRow+data.lastMoveColumn-(data.winStart+4)]);
+    }
+    function validGomokuResult(roomId,matchId,before,after) {
+      let won=affectedWin(roomId,matchId,after,before.currentTurn);
+      return won ? (after.status=='won' && after.winner==before.currentTurn && after.currentTurn==before.currentTurn
+          && after.winningProofCells.size()==5 && after.winDirection in ['row','column','down','up'] && after.winStart is int
+          && validWinningProjection(roomId,matchId,after,before.currentTurn))
+        : after.moveCount==225 ? (after.status=='draw' && after.winner==null && after.currentTurn==before.currentTurn
+          && after.winningProofCells.size()==0 && after.winDirection==null && after.winStart==null)
+        : (after.status=='playing' && after.winner==null && after.currentTurn!=before.currentTurn
+          && after.winningProofCells.size()==0 && after.winDirection==null && after.winStart==null);
+    }
     function validBoard(board) { return board is list && board.size() == 9 && board.toSet().hasOnly([null, 'X', 'O']); }
     function hasLine(board, mark) {
       return (board[0] == mark && board[1] == mark && board[2] == mark)
@@ -50,18 +106,19 @@ service cloud.firestore {
     function scoreDelta(roomId, playerId, beforeMatch, afterMatch) {
       let beforeScore = get(playerPath(roomId, playerId)).data.partyScore;
       let afterScore = getAfter(playerPath(roomId, playerId)).data.partyScore;
-      let mark = playerId == beforeMatch.playerX ? 'X' : 'O';
+      let mark = beforeMatch.gameType == 'gomoku' ? (playerId == beforeMatch.playerBlack ? 'black' : 'white') : (playerId == beforeMatch.playerX ? 'X' : 'O');
       let expected = afterMatch.status == 'draw' ? 1 : afterMatch.winner == mark ? 3 : 0;
       return afterScore == beforeScore + expected;
     }
     function validScoreSettlement(roomId, beforeMatch, afterMatch) {
-      return scoreDelta(roomId, beforeMatch.playerX, beforeMatch, afterMatch)
-        && scoreDelta(roomId, beforeMatch.playerO, beforeMatch, afterMatch);
+      let first = beforeMatch.gameType == 'gomoku' ? beforeMatch.playerBlack : beforeMatch.playerX;
+      let second = beforeMatch.gameType == 'gomoku' ? beforeMatch.playerWhite : beforeMatch.playerO;
+      return scoreDelta(roomId, first, beforeMatch, afterMatch) && scoreDelta(roomId, second, beforeMatch, afterMatch);
     }
     function validSeriesSettlement(roomId, beforeSeries, afterSeries) {
       let beforeMatch = get(matchPath(roomId, room(roomId).data.currentMatchId)).data;
       let afterMatch = getAfter(matchPath(roomId, room(roomId).data.currentMatchId)).data;
-      let winningId = afterMatch.status == 'won' ? (afterMatch.winner == 'X' ? beforeMatch.playerX : beforeMatch.playerO) : null;
+      let winningId = afterMatch.status == 'won' ? (beforeMatch.gameType == 'gomoku' ? (afterMatch.winner == 'black' ? beforeMatch.playerBlack : beforeMatch.playerWhite) : (afterMatch.winner == 'X' ? beforeMatch.playerX : beforeMatch.playerO)) : null;
       return afterSeries.winsByPlayer[beforeSeries.playerA] == beforeSeries.winsByPlayer[beforeSeries.playerA] + (winningId == beforeSeries.playerA ? 1 : 0)
         && afterSeries.winsByPlayer[beforeSeries.playerB] == beforeSeries.winsByPlayer[beforeSeries.playerB] + (winningId == beforeSeries.playerB ? 1 : 0);
     }
@@ -80,10 +137,11 @@ service cloud.firestore {
       allow get: if signedIn();
       allow list, delete: if false;
       allow create: if signedIn()
-        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','currentMatchId','currentSeriesId','roundNumber','seriesNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','playerCount','spectatorCount','activePlayerCount','usedAvatarIds','usedEmojis'])
+        && request.resource.data.keys().hasOnly(['hostId','roomCode','status','selectedGameType','activeGameType','gameSelectionVersion','currentMatchId','currentSeriesId','roundNumber','seriesNumber','gameVersion','schemaVersion','createdAt','updatedAt','expiresAt','settings','memberIds','memberCount','playerCount','spectatorCount','activePlayerCount','usedAvatarIds','usedEmojis'])
         && request.resource.data.hostId == request.auth.uid
         && request.resource.data.roomCode is string && request.resource.data.roomCode.size() == 5
         && request.resource.data.status == 'lobby' && request.resource.data.currentMatchId == null && request.resource.data.currentSeriesId == null && request.resource.data.roundNumber == -1 && request.resource.data.seriesNumber == -1
+        && request.resource.data.selectedGameType == 'tic-tac-toe' && request.resource.data.activeGameType == null && request.resource.data.gameSelectionVersion == 1
         && request.resource.data.memberIds == [request.auth.uid] && request.resource.data.memberCount == 1 && request.resource.data.playerCount == 1 && request.resource.data.spectatorCount == 0 && request.resource.data.activePlayerCount == 1
         && request.resource.data.usedEmojis is list && request.resource.data.usedEmojis.size() == 1
         && request.resource.data.usedAvatarIds is list && request.resource.data.usedAvatarIds.size() == 1
@@ -96,10 +154,14 @@ service cloud.firestore {
         && request.resource.data.settings.maxActivePlayers is int && request.resource.data.settings.maxActivePlayers >= 2 && request.resource.data.settings.maxActivePlayers <= 8
         && request.resource.data.settings.seriesTargetWins in [1,2,3]
         && request.resource.data.settings.maxSeriesRounds in [1,5,9];
-      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt']) ? (
+      allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['selectedGameType','gameSelectionVersion','updatedAt']) ? (
+          isHost(roomId) && resource.data.status in ['lobby','seriesBreak','seriesOver']
+          && validGameType(request.resource.data.selectedGameType) && request.resource.data.gameSelectionVersion == 1
+          && validServerTime(request.resource.data.updatedAt)
+        ) : request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','updatedAt']) ? (
           signedIn() && validServerTime(request.resource.data.updatedAt)
           && ((resource.data.status == 'playing' && resource.data.currentMatchId != null
-              && request.auth.uid == (get(matchPath(roomId, resource.data.currentMatchId)).data.currentTurn == 'X' ? get(matchPath(roomId, resource.data.currentMatchId)).data.playerX : get(matchPath(roomId, resource.data.currentMatchId)).data.playerO)
+              && request.auth.uid == (get(matchPath(roomId, resource.data.currentMatchId)).data.gameType == 'gomoku' ? get(matchPath(roomId, resource.data.currentMatchId)).data.lastPlayerId : currentPlayer(get(matchPath(roomId, resource.data.currentMatchId)).data))
               && request.resource.data.status in ['roundOver','seriesBreak']
               && getAfter(matchPath(roomId, resource.data.currentMatchId)).data.status in ['won','draw']
               && getAfter(matchPath(roomId, resource.data.currentMatchId)).data.scoreApplied == true
@@ -142,12 +204,16 @@ service cloud.firestore {
           && validServerTime(request.resource.data.updatedAt)
         ) : (
           isHost(roomId)
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','currentMatchId','currentSeriesId','roundNumber','seriesNumber','updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','activeGameType','currentMatchId','currentSeriesId','roundNumber','seriesNumber','updatedAt'])
           && validServerTime(request.resource.data.updatedAt)
           && ((resource.data.status == 'lobby' && request.resource.data.status == 'playing' && request.resource.data.roundNumber == 0 && request.resource.data.seriesNumber == 0)
             || (resource.data.status == 'roundOver' && request.resource.data.status == 'playing' && request.resource.data.roundNumber == resource.data.roundNumber + 1)
             || (resource.data.status in ['seriesOver','seriesBreak'] && request.resource.data.status == 'playing' && request.resource.data.roundNumber == resource.data.roundNumber + 1 && request.resource.data.seriesNumber == resource.data.seriesNumber + 1))
           && request.resource.data.currentMatchId != resource.data.currentMatchId && request.resource.data.currentSeriesId != null
+          && validGameType(roomActiveGame(request.resource.data))
+          && roomActiveGame(request.resource.data) == roomSelectedGame(resource.data)
+          && getAfter(matchPath(roomId, request.resource.data.currentMatchId)).data.gameType == roomActiveGame(request.resource.data)
+          && getAfter(seriesPath(roomId, request.resource.data.currentSeriesId)).data.gameType == roomActiveGame(request.resource.data)
         );
 
       match /players/{playerId} {
@@ -177,7 +243,7 @@ service cloud.firestore {
             isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId != null
             && get(matchPath(roomId, room(roomId).data.currentMatchId)).data.scoreApplied == false
             && getAfter(matchPath(roomId, room(roomId).data.currentMatchId)).data.scoreApplied == true
-            && playerId in [get(matchPath(roomId, room(roomId).data.currentMatchId)).data.playerX, get(matchPath(roomId, room(roomId).data.currentMatchId)).data.playerO]
+            && playerId in matchPlayers(get(matchPath(roomId, room(roomId).data.currentMatchId)).data)
           ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['role']) ? (
             signedIn() && resource.data.playerId == playerId && room(roomId).data.status in ['lobby','seriesBreak','seriesOver']
             && (request.auth.uid == playerId || isHost(roomId))
@@ -206,31 +272,39 @@ service cloud.firestore {
       match /matches/{matchId} {
         allow read: if isMember(roomId);
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','approvedSpectatorId','approvedSuggestionMoveCount','assistSpectatorId','assistAvatarId','createdAt','updatedAt'])
-          && request.resource.data.gameType == 'tic-tac-toe' && validBoard(request.resource.data.board)
-          && request.resource.data.playerX != request.resource.data.playerO
-          && room(roomId).data.memberIds.hasAny([request.resource.data.playerX])
-          && room(roomId).data.memberIds.hasAny([request.resource.data.playerO])
-          && request.resource.data.moveCount == 0 && request.resource.data.currentTurn == 'X'
+          && ((request.resource.data.gameType == 'tic-tac-toe'
+              && request.resource.data.keys().hasOnly(['gameType','playerX','playerO','board','currentTurn','status','winner','winningLine','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','suggestionsMutedMoveCount','approvedSpectatorId','approvedSuggestionMoveCount','assistSpectatorId','assistAvatarId','createdAt','updatedAt'])
+              && validBoard(request.resource.data.board) && request.resource.data.playerX != request.resource.data.playerO
+              && room(roomId).data.memberIds.hasAll([request.resource.data.playerX,request.resource.data.playerO])
+              && request.resource.data.currentTurn == 'X' && request.resource.data.winningLine.size() == 0)
+            || (request.resource.data.gameType == 'gomoku'
+              && request.resource.data.keys().hasOnly(['gameType','playerBlack','playerWhite','currentTurn','status','winner','winningProofCells','winDirection','winStart','moveCount','scoreApplied','roundNumber','seriesId','seriesRoundNumber','lastMoveId','lastPlayerId','lastMoveRow','lastMoveColumn','suggestionsMutedMoveCount','approvedSpectatorId','approvedSuggestionMoveCount','assistSpectatorId','assistAvatarId','createdAt','updatedAt'])
+              && request.resource.data.playerBlack != request.resource.data.playerWhite
+              && room(roomId).data.memberIds.hasAll([request.resource.data.playerBlack,request.resource.data.playerWhite])
+              && request.resource.data.currentTurn == 'black' && request.resource.data.winningProofCells.size() == 0 && request.resource.data.winDirection == null && request.resource.data.winStart == null
+              && request.resource.data.lastMoveId == null && request.resource.data.lastPlayerId == null && request.resource.data.lastMoveRow == null && request.resource.data.lastMoveColumn == null))
+          && request.resource.data.moveCount == 0
           && request.resource.data.status == 'playing' && request.resource.data.winner == null
-          && request.resource.data.winningLine.size() == 0 && request.resource.data.scoreApplied == false && request.resource.data.suggestionsMutedMoveCount == -1
+          && request.resource.data.scoreApplied == false && request.resource.data.suggestionsMutedMoveCount == -1
           && request.resource.data.approvedSpectatorId == null && request.resource.data.approvedSuggestionMoveCount == -1
           && request.resource.data.assistSpectatorId == null && request.resource.data.assistAvatarId == null
           && request.resource.data.seriesId == getAfter(roomPath(roomId)).data.currentSeriesId
           && getAfter(roomPath(roomId)).data.currentMatchId == matchId
+          && request.resource.data.gameType == roomActiveGame(getAfter(roomPath(roomId)).data)
+          && request.resource.data.gameType == getAfter(seriesPath(roomId,request.resource.data.seriesId)).data.gameType
           && getAfter(roomPath(roomId)).data.status == 'playing'
           && getAfter(roomPath(roomId)).data.roundNumber == request.resource.data.roundNumber
           && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt);
         allow update: if request.resource.data.diff(resource.data).affectedKeys().hasOnly(['scoreApplied','updatedAt']) ? (
             isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
             && resource.data.status in ['won','draw'] && resource.data.scoreApplied == false && request.resource.data.scoreApplied == true
-            && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
+            && request.auth.uid == (resource.data.gameType == 'gomoku' ? resource.data.lastPlayerId : currentPlayer(resource.data))
             && getAfter(roomPath(roomId)).data.status in ['roundOver','seriesBreak']
             && validScoreSettlement(roomId, resource.data, request.resource.data)
             && validServerTime(request.resource.data.updatedAt)
-          ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['approvedSpectatorId','approvedSuggestionMoveCount']) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['board']) ? (
+          ) : request.resource.data.diff(resource.data).affectedKeys().hasAny(['approvedSpectatorId','approvedSuggestionMoveCount']) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['board','moveCount']) ? (
             isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
-            && resource.data.status == 'playing' && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
+            && resource.data.status == 'playing' && request.auth.uid == currentPlayer(resource.data)
             && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['approvedSpectatorId','approvedSuggestionMoveCount','updatedAt'])
             && resource.data.approvedSuggestionMoveCount != resource.data.moveCount
             && request.resource.data.approvedSuggestionMoveCount == resource.data.moveCount
@@ -239,8 +313,27 @@ service cloud.firestore {
           ) : request.resource.data.diff(resource.data).affectedKeys().hasOnly(['suggestionsMutedMoveCount','updatedAt']) ? (
             isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
             && resource.data.status == 'playing'
-            && request.auth.uid == (resource.data.currentTurn == 'X' ? resource.data.playerX : resource.data.playerO)
+            && request.auth.uid == currentPlayer(resource.data)
             && request.resource.data.suggestionsMutedMoveCount == resource.data.moveCount
+            && validServerTime(request.resource.data.updatedAt)
+          ) : resource.data.gameType == 'gomoku' ? (
+            isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && resource.data.status == 'playing' && resource.data.scoreApplied == false && request.resource.data.scoreApplied == false
+            && request.auth.uid == currentPlayer(resource.data)
+            && get(playerPath(roomId,request.auth.uid)).data.role == 'player'
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['currentTurn','status','winner','winningProofCells','winDirection','winStart','moveCount','lastMoveId','lastPlayerId','lastMoveRow','lastMoveColumn','approvedSpectatorId','approvedSuggestionMoveCount','assistSpectatorId','assistAvatarId','updatedAt'])
+            && request.resource.data.moveCount == resource.data.moveCount + 1
+            && request.resource.data.lastMoveId is string && request.resource.data.lastPlayerId == request.auth.uid
+            && inGomokuBounds(request.resource.data.lastMoveRow,request.resource.data.lastMoveColumn)
+            && getAfter(movePath(roomId,matchId,request.resource.data.lastMoveId)).data.moveNumber == request.resource.data.moveCount
+            && getAfter(movePath(roomId,matchId,request.resource.data.lastMoveId)).data.playerId == request.auth.uid
+            && getAfter(projectionPath(roomId,matchId,'row',request.resource.data.lastMoveRow)).data.cells[request.resource.data.lastMoveColumn] == resource.data.currentTurn
+            && getAfter(projectionPath(roomId,matchId,'column',request.resource.data.lastMoveColumn)).data.cells[request.resource.data.lastMoveRow] == resource.data.currentTurn
+            && getAfter(projectionPath(roomId,matchId,'down',request.resource.data.lastMoveRow-request.resource.data.lastMoveColumn+14)).data.cells[request.resource.data.lastMoveRow] == resource.data.currentTurn
+            && getAfter(projectionPath(roomId,matchId,'up',request.resource.data.lastMoveRow+request.resource.data.lastMoveColumn)).data.cells[request.resource.data.lastMoveRow] == resource.data.currentTurn
+            && request.resource.data.approvedSpectatorId == null && request.resource.data.approvedSuggestionMoveCount == -1
+            && request.resource.data.assistSpectatorId == null && request.resource.data.assistAvatarId == null
+            && validGomokuResult(roomId,matchId,resource.data,request.resource.data)
             && validServerTime(request.resource.data.updatedAt)
           ) : (
             isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
@@ -267,12 +360,48 @@ service cloud.firestore {
           );
         allow delete: if false;
 
+        match /moves/{moveId} {
+          allow read: if isMember(roomId);
+          allow create: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && get(matchPath(roomId,matchId)).data.gameType == 'gomoku' && get(matchPath(roomId,matchId)).data.status == 'playing'
+            && request.auth.uid == currentPlayer(get(matchPath(roomId,matchId)).data)
+            && get(playerPath(roomId,request.auth.uid)).data.role == 'player'
+            && request.resource.data.keys().hasOnly(['moveNumber','moveId','cellKey','playerId','stone','row','column','createdAt'])
+            && request.resource.data.moveId == moveId && request.resource.data.playerId == request.auth.uid
+            && request.resource.data.moveNumber == get(matchPath(roomId,matchId)).data.moveCount + 1
+            && request.resource.data.stone == get(matchPath(roomId,matchId)).data.currentTurn
+            && inGomokuBounds(request.resource.data.row,request.resource.data.column)
+            && request.resource.data.cellKey == request.resource.data.row*15+request.resource.data.column
+            && getAfter(projectionPath(roomId,matchId,'row',request.resource.data.row)).data.cells[request.resource.data.column] == request.resource.data.stone
+            && validServerTime(request.resource.data.createdAt);
+          allow update, delete: if false;
+        }
+
+        match /projections/{lineType}/lines/{lineId} {
+          allow read: if isMember(roomId);
+          allow create, update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
+            && lineType in ['row','column','down','up'] && get(matchPath(roomId,matchId)).data.gameType == 'gomoku'
+            && get(matchPath(roomId,matchId)).data.status == 'playing' && request.auth.uid == currentPlayer(get(matchPath(roomId,matchId)).data)
+            && request.resource.data.keys().hasOnly(['lineType','lineIndex','cells','updatedAt'])
+            && request.resource.data.lineType == lineType && request.resource.data.lineIndex is int && request.resource.data.lineIndex >= 0 && request.resource.data.lineIndex <= 28
+            && getAfter(projectionPath(roomId,matchId,lineType,request.resource.data.lineIndex)).data.cells == request.resource.data.cells
+            && (resource == null
+              ? legalLineChange([null,null,null,null,null,null,null,null,null,null,null,null,null,null,null],request.resource.data.cells,lineType=='row'?getAfter(matchPath(roomId,matchId)).data.lastMoveColumn:getAfter(matchPath(roomId,matchId)).data.lastMoveRow,get(matchPath(roomId,matchId)).data.currentTurn)
+              : legalLineChange(resource.data.cells,request.resource.data.cells,lineType=='row'?getAfter(matchPath(roomId,matchId)).data.lastMoveColumn:getAfter(matchPath(roomId,matchId)).data.lastMoveRow,get(matchPath(roomId,matchId)).data.currentTurn))
+            && ((lineType=='row' && request.resource.data.lineIndex==getAfter(matchPath(roomId,matchId)).data.lastMoveRow)
+              || (lineType=='column' && request.resource.data.lineIndex==getAfter(matchPath(roomId,matchId)).data.lastMoveColumn)
+              || (lineType=='down' && request.resource.data.lineIndex==getAfter(matchPath(roomId,matchId)).data.lastMoveRow-getAfter(matchPath(roomId,matchId)).data.lastMoveColumn+14)
+              || (lineType=='up' && request.resource.data.lineIndex==getAfter(matchPath(roomId,matchId)).data.lastMoveRow+getAfter(matchPath(roomId,matchId)).data.lastMoveColumn))
+            && validServerTime(request.resource.data.updatedAt);
+          allow delete: if false;
+        }
+
         match /suggestions/{spectatorId} {
           allow read: if isMember(roomId);
           allow create: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentMatchId == matchId
             && request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
             && get(matchPath(roomId, matchId)).data.status == 'playing'
-            && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorAvatarId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
+            && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorAvatarId','spectatorEmoji','spectatorName','status','suggestedCell','suggestedRow','suggestedColumn','approvedBy','createdAt','approvedAt','suggestedAt'])
             && request.resource.data.roomId == roomId && request.resource.data.seriesId == room(roomId).data.currentSeriesId && request.resource.data.matchId == matchId
             && request.resource.data.moveCount == get(matchPath(roomId, matchId)).data.moveCount && request.resource.data.spectatorId == request.auth.uid
             && validAvatarId(request.resource.data.spectatorAvatarId)
@@ -286,19 +415,20 @@ service cloud.firestore {
             && ((
               request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
               && resource.data.moveCount < request.resource.data.moveCount && request.resource.data.status == 'raised'
-              && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorAvatarId','spectatorEmoji','spectatorName','status','suggestedCell','approvedBy','createdAt','approvedAt','suggestedAt'])
+              && request.resource.data.keys().hasOnly(['roomId','seriesId','matchId','moveCount','spectatorId','spectatorAvatarId','spectatorEmoji','spectatorName','status','suggestedCell','suggestedRow','suggestedColumn','approvedBy','createdAt','approvedAt','suggestedAt'])
               && request.resource.data.roomId == roomId && request.resource.data.spectatorId == request.auth.uid
               && request.resource.data.suggestedCell == null && request.resource.data.approvedBy == null && request.resource.data.approvedAt == null && request.resource.data.suggestedAt == null
               && validServerTime(request.resource.data.createdAt)
             ) || (
               resource.data.status == 'raised'
-              && request.auth.uid == (get(matchPath(roomId, matchId)).data.currentTurn == 'X' ? get(matchPath(roomId, matchId)).data.playerX : get(matchPath(roomId, matchId)).data.playerO)
+              && request.auth.uid == currentPlayer(get(matchPath(roomId,matchId)).data)
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','approvedBy','approvedAt'])
               && ((request.resource.data.status == 'approved' && request.resource.data.approvedBy == request.auth.uid && validServerTime(request.resource.data.approvedAt)
                   && getAfter(matchPath(roomId, matchId)).data.approvedSpectatorId == spectatorId && getAfter(matchPath(roomId, matchId)).data.approvedSuggestionMoveCount == resource.data.moveCount)
                 || (request.resource.data.status == 'dismissed' && request.resource.data.approvedBy == null && request.resource.data.approvedAt == null))
             ) || (
-              request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
+              get(matchPath(roomId,matchId)).data.gameType == 'tic-tac-toe'
+              && request.auth.uid == spectatorId && get(playerPath(roomId, request.auth.uid)).data.role == 'spectator'
               && resource.data.status == 'approved' && resource.data.approvedBy != null
               && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','suggestedCell','suggestedAt'])
               && request.resource.data.status == 'suggested' && request.resource.data.suggestedCell is int
@@ -306,6 +436,18 @@ service cloud.firestore {
               && get(matchPath(roomId, matchId)).data.board[request.resource.data.suggestedCell] == null
               && get(matchPath(roomId, matchId)).data.approvedSpectatorId == spectatorId
               && get(matchPath(roomId, matchId)).data.approvedSuggestionMoveCount == resource.data.moveCount
+              && validServerTime(request.resource.data.suggestedAt)
+            ) || (
+              get(matchPath(roomId,matchId)).data.gameType == 'gomoku'
+              && request.auth.uid == spectatorId && get(playerPath(roomId,request.auth.uid)).data.role == 'spectator'
+              && resource.data.status == 'approved' && resource.data.approvedBy != null
+              && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','suggestedCell','suggestedRow','suggestedColumn','suggestedAt'])
+              && request.resource.data.status == 'suggested' && request.resource.data.suggestedCell == null
+              && inGomokuBounds(request.resource.data.suggestedRow,request.resource.data.suggestedColumn)
+              && (!exists(projectionPath(roomId,matchId,'row',request.resource.data.suggestedRow))
+                || get(projectionPath(roomId,matchId,'row',request.resource.data.suggestedRow)).data.cells[request.resource.data.suggestedColumn] == null)
+              && get(matchPath(roomId,matchId)).data.approvedSpectatorId == spectatorId
+              && get(matchPath(roomId,matchId)).data.approvedSuggestionMoveCount == resource.data.moveCount
               && validServerTime(request.resource.data.suggestedAt)
             ));
           allow delete: if false;
@@ -315,7 +457,9 @@ service cloud.firestore {
       match /series/{seriesId} {
         allow read: if isMember(roomId);
         allow create: if isHost(roomId)
-          && request.resource.data.keys().hasOnly(['playerA','playerB','winsByPlayer','roundsPlayed','targetWins','maxRounds','status','winnerId','pairingRoundNumber','createdAt','updatedAt'])
+          && request.resource.data.keys().hasOnly(['gameType','scoreApplied','playerA','playerB','winsByPlayer','roundsPlayed','targetWins','maxRounds','status','winnerId','pairingRoundNumber','createdAt','updatedAt'])
+          && validGameType(request.resource.data.gameType) && request.resource.data.gameType == roomActiveGame(getAfter(roomPath(roomId)).data)
+          && request.resource.data.scoreApplied == false
           && request.resource.data.playerA != request.resource.data.playerB
           && (!get(playerPath(roomId, request.resource.data.playerA)).data.keys().hasAny(['role']) || get(playerPath(roomId, request.resource.data.playerA)).data.role == 'player')
           && (!get(playerPath(roomId, request.resource.data.playerB)).data.keys().hasAny(['role']) || get(playerPath(roomId, request.resource.data.playerB)).data.role == 'player')
@@ -325,9 +469,11 @@ service cloud.firestore {
           && getAfter(roomPath(roomId)).data.currentSeriesId == seriesId
           && validServerTime(request.resource.data.createdAt) && validServerTime(request.resource.data.updatedAt);
         allow update: if isMember(roomId) && room(roomId).data.status == 'playing' && room(roomId).data.currentSeriesId == seriesId
-          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['winsByPlayer','roundsPlayed','status','winnerId','updatedAt'])
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['winsByPlayer','roundsPlayed','status','winnerId','scoreApplied','updatedAt'])
           && request.resource.data.roundsPlayed == resource.data.roundsPlayed + 1
           && request.resource.data.status in ['playing','won','draw']
+          && (!resource.data.keys().hasAny(['scoreApplied']) || resource.data.scoreApplied == false)
+          && request.resource.data.scoreApplied == (request.resource.data.status in ['won','draw'])
           && validSeriesSettlement(roomId, resource.data, request.resource.data)
           && validSeriesResult(request.resource.data)
           && validServerTime(request.resource.data.updatedAt);

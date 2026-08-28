@@ -85,6 +85,28 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--cyb
 .series-picker legend { padding: 0 8px; color: var(--cyber-cyan); font-weight: 900; }
 .series-picker button, .role-toggle, .suggestions button { min-height: 40px; border: 1px solid var(--cyber-border); border-radius: 12px; color: var(--cyber-text); background: var(--cyber-panel-strong); font-weight: 800; }
 .series-picker button.selected { color: #14244c; background: var(--cyber-mint); outline: 3px solid #fff; }
+.game-picker { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; padding: 12px; border: 2px solid var(--cyber-border); border-radius: 18px; }
+.game-picker legend { padding: 0 8px; color: var(--cyber-cyan); font-weight: 900; }
+.game-card { min-height: 112px; display: grid; place-items: center; gap: 4px; padding: 12px; border: 2px solid var(--cyber-border); border-radius: 16px; color: var(--cyber-text); background: var(--cyber-panel-strong); text-align: center; }
+.game-card strong { color: var(--cyber-cyan); font-size: 1.05rem; }
+.game-card.selected { outline: 3px solid var(--cyber-yellow); outline-offset: 2px; }
+.game-card b { color: var(--cyber-yellow); }
+.game-card:disabled { opacity: 1; cursor: default; }
+.gomoku-rules { display: grid; gap: 3px; padding: 9px 12px; border: 2px solid var(--cyber-cyan); border-radius: 14px; text-align: center; }
+.gomoku-rules span { color: var(--cyber-yellow); font-weight: 900; font-size: .78rem; }
+.gomoku-tools { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
+.gomoku-tools button { min-height: 42px; border: 1px solid var(--cyber-border); border-radius: 10px; color: var(--cyber-text); background: var(--cyber-panel-strong); font-weight: 900; }
+.gomoku-viewport { width: 100%; aspect-ratio: 1; overflow: auto; overscroll-behavior: contain; border: 2px solid var(--cyber-border); border-radius: 18px; background: #081733; box-shadow: var(--cyber-shadow); touch-action: pan-x pan-y; }
+.gomoku-board { width: 100%; min-width: 360px; aspect-ratio: 1; display: grid; grid-template-columns: repeat(15,1fr); padding: 12px; background: linear-gradient(rgba(112,215,235,.08),rgba(112,215,235,.08)); }
+.gomoku-point { position: relative; min-width: 0; min-height: 0; padding: 0; border: 0; border-radius: 0; background-color: transparent; background-image: linear-gradient(to right,transparent calc(50% - .5px),#63b7ce calc(50% - .5px),#63b7ce calc(50% + .5px),transparent calc(50% + .5px)),linear-gradient(to bottom,transparent calc(50% - .5px),#63b7ce calc(50% - .5px),#63b7ce calc(50% + .5px),transparent calc(50% + .5px)); cursor: crosshair; }
+.gomoku-point span { position: absolute; inset: 13%; border-radius: 50%; box-shadow: 0 0 0 2px currentColor,0 0 10px currentColor; }
+.gomoku-point.black span { color: #9ce9ff; background: #071020; }
+.gomoku-point.white span { color: #ffe49a; background: #fff4d2; }
+.gomoku-point.last-move i { position: absolute; inset: 28%; display: grid; place-items: center; border-radius: 50%; color: #071020; background: var(--cyber-yellow); font-size: clamp(.35rem,1.2vw,.55rem); font-style: normal; font-weight: 1000; z-index: 2; overflow: hidden; }
+.gomoku-point.winner { outline: 3px solid var(--cyber-yellow); outline-offset: -4px; z-index: 2; }
+.gomoku-point.suggested::after { content: ""; position: absolute; inset: 4%; border: 2px dashed var(--cyber-purple); border-radius: 50%; }
+.gomoku-point.suggested b { position: absolute; inset: 0; display: grid; place-items: center; z-index: 3; font-size: clamp(.55rem,1.8vw,.9rem); }
+.gomoku-point:focus-visible { outline: 3px solid #fff; z-index: 4; }
 .role-toggle { width: 100%; margin-top: 8px; font-size: .72rem; }
 .series-score { display: flex; flex-wrap: wrap; gap: 8px; padding: 10px; border: 2px solid var(--cyber-border); border-radius: 14px; }
 .series-score > * { flex: 1 1 auto; text-align: center; }
@@ -124,6 +146,7 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--cyb
 @keyframes suggestion-pulse { 50% { transform: scale(.88); opacity: .65; } }
 @media (max-width: 420px) {
   .series-picker { grid-template-columns: 1fr; }
+  .game-picker { grid-template-columns: 1fr; }
   .app-shell { align-content: start; gap: 16px; }
   .waiting-practice .board { max-height: 52vh; }
   .waiting-practice .practice-difficulty { padding: 9px 12px; gap: 5px; }
@@ -134,6 +157,8 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--cyb
   .match-invite { order: -1; }
   .avatar-preview { min-height: 160px; }
   .avatar-role { grid-template-columns: 1fr; }
+  .gomoku-board { min-width: 420px; }
+  .gomoku-tools { position: sticky; bottom: max(4px,env(safe-area-inset-bottom)); z-index: 5; }
 }
 @media (min-width: 760px) and (orientation: landscape) {
   .app-shell.practice { width: min(100%, 980px); grid-template-columns: minmax(280px, .8fr) minmax(360px, 1fr); align-items: center; }
@@ -141,5 +166,6 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--cyb
   .practice .topbar, .practice .game-header, .practice .matchup, .practice .turn-banner, .practice .status, .practice .game-actions { grid-column: 1; }
   .practice > .button { grid-column: 1; }
   .practice .board { grid-column: 2; grid-row: 2 / span 6; }
+  .practice .gomoku-viewport { grid-column: 2; grid-row: 2 / span 8; max-height: 78vh; }
 }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior: auto !important; animation: none !important; transition: none !important; } }

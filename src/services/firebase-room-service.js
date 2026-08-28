@@ -1,5 +1,7 @@
 import { collection, doc, getDoc, getDocFromServer, getDocsFromServer, onSnapshot, runTransaction, serverTimestamp, Timestamp } from "firebase/firestore";
 import { createGame, makeMove } from "../games/tic-tac-toe/rules.js";
+import { BLACK, WHITE } from "../games/gomoku/rules.js";
+import { DEFAULT_GAME_TYPE, GAME_TYPES, normalizeGameType } from "../games/registry.js";
 import { AVATAR_IDS, DEFAULT_AVATAR_ID, avatarById, avatarFromLegacyEmoji, availableAvatars } from "../config/avatars.js";
 import { pairForRound } from "../core/round-robin.js";
 import { generateShortRoomCode, normalizeRoomCode } from "../core/room-code.js";
@@ -13,6 +15,9 @@ export function createFirebaseRoomService({ db, uid }) {
   const seriesRef = (roomId, seriesId) => doc(db, "rooms", roomId, "series", seriesId);
   const suggestionsRef = (roomId, matchId) => collection(db, "rooms", roomId, "matches", matchId, "suggestions");
   const suggestionRef = (roomId, matchId, playerId) => doc(db, "rooms", roomId, "matches", matchId, "suggestions", playerId);
+  const movesRef = (roomId, matchId) => collection(db, "rooms", roomId, "matches", matchId, "moves");
+  const moveRef = (roomId, matchId, moveNumber) => doc(db, "rooms", roomId, "matches", matchId, "moves", `move-${moveNumber}`);
+  const projectionRef = (roomId,matchId,type,index) => doc(db,"rooms",roomId,"matches",matchId,"projections",type,"lines",String(index));
 
   async function create(code = null, avatarId = DEFAULT_AVATAR_ID, maxAttempts = 5, codeGenerator = generateShortRoomCode) {
     if (typeof avatarId === "number") { codeGenerator = maxAttempts; maxAttempts = avatarId; avatarId = DEFAULT_AVATAR_ID; }
@@ -33,7 +38,7 @@ export function createFirebaseRoomService({ db, uid }) {
       if ((await tx.get(codeRef)).exists()) throw new Error("Room code collision");
       const expiresAt = Timestamp.fromMillis(Date.now() + 6 * 60 * 60 * 1000);
       const avatar = avatarById(avatarId);
-      tx.set(roomRef(roomId), { hostId: uid, roomCode: code, status: "lobby", currentMatchId: null, currentSeriesId: null, roundNumber: -1, seriesNumber: -1, gameVersion: 5, schemaVersion: 5, memberIds: [uid], memberCount: 1, playerCount: 1, spectatorCount: 0, activePlayerCount: 1, usedAvatarIds: [avatar.id], usedEmojis: [avatar.emoji], createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt, settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, gameType: "tic-tac-toe", seriesTargetWins: 2, maxSeriesRounds: 5 } });
+      tx.set(roomRef(roomId), { hostId: uid, roomCode: code, status: "lobby", selectedGameType: DEFAULT_GAME_TYPE, activeGameType: null, gameSelectionVersion: 1, currentMatchId: null, currentSeriesId: null, roundNumber: -1, seriesNumber: -1, gameVersion: 6, schemaVersion: 6, memberIds: [uid], memberCount: 1, playerCount: 1, spectatorCount: 0, activePlayerCount: 1, usedAvatarIds: [avatar.id], usedEmojis: [avatar.emoji], createdAt: serverTimestamp(), updatedAt: serverTimestamp(), expiresAt, settings: { maxMembers: 8, maxPlayers: 8, maxActivePlayers: 6, gameType: "tic-tac-toe", seriesTargetWins: 2, maxSeriesRounds: 5 } });
       tx.set(playerRef(roomId, uid), playerData(uid, avatar, 0, "player"));
       tx.set(codeRef, { roomId, expiresAt });
     });
@@ -100,31 +105,34 @@ export function createFirebaseRoomService({ db, uid }) {
     const suggestionSnapshots = room.currentMatchId ? await getDocsFromServer(suggestionsRef(roomId, room.currentMatchId)) : null;
     return {
       id: roomId,
-      ...room,
+      ...room, selectedGameType: normalizeGameType(room.selectedGameType), activeGameType: room.activeGameType ? normalizeGameType(room.activeGameType) : null,
       match: matchSnapshot?.exists() ? { id: matchSnapshot.id, ...matchSnapshot.data() } : null,
       players: playerSnapshots.docs.map(item => ({ role: "player", ...item.data() })).sort((a, b) => a.seat - b.seat),
       series: seriesSnapshot?.exists() ? { id: seriesSnapshot.id, ...seriesSnapshot.data() } : null,
-      suggestions: suggestionSnapshots ? suggestionSnapshots.docs.map(item => ({ id: item.id, ...item.data() })) : []
+      suggestions: suggestionSnapshots ? suggestionSnapshots.docs.map(item => ({ id: item.id, ...item.data() })) : [],
+      moves: room.currentMatchId && matchSnapshot?.data()?.gameType === "gomoku" ? (await getDocsFromServer(movesRef(roomId,room.currentMatchId))).docs.map(item=>item.data()).sort((a,b)=>a.moveNumber-b.moveNumber) : []
     };
   }
 
   function watch(roomId, listener, onError) {
-    let roomData = null, players = [], match = null, series = null, suggestions = [], matchLoading = false;
-    let activeMatchId = null, activeSeriesId = null, matchStop = null, seriesStop = null, suggestionsStop = null;
-    const emit = () => roomData && listener({ id: roomId, ...roomData, players: players.map(player => ({ role: "player", ...player })), match, series, suggestions, matchLoading });
+    let roomData = null, players = [], match = null, series = null, suggestions = [], moves = [], matchLoading = false;
+    let activeMatchId = null, activeSeriesId = null, matchStop = null, seriesStop = null, suggestionsStop = null, movesStop = null;
+    const emit = () => roomData && listener({ id: roomId, ...roomData, selectedGameType: normalizeGameType(roomData.selectedGameType), activeGameType: roomData.activeGameType ? normalizeGameType(roomData.activeGameType) : null, players: players.map(player => ({ role: "player", ...player })), match, series, suggestions, moves, matchLoading });
     const stopRoom = onSnapshot(roomRef(roomId), snapshot => {
       roomData = snapshot.data();
       const nextMatchId = roomData?.currentMatchId || null;
       if (nextMatchId !== activeMatchId) {
-        matchStop?.(); suggestionsStop?.(); matchStop = suggestionsStop = null; activeMatchId = nextMatchId; match = null; suggestions = [];
+        matchStop?.(); suggestionsStop?.(); movesStop?.(); matchStop = suggestionsStop = movesStop = null; activeMatchId = nextMatchId; match = null; suggestions = []; moves = [];
         matchLoading = Boolean(nextMatchId); emit();
         if (nextMatchId) matchStop = onSnapshot(matchRef(roomId, nextMatchId), matchSnapshot => {
           match = matchSnapshot.exists() ? { id: matchSnapshot.id, ...matchSnapshot.data() } : null;
-          matchLoading = !match; emit();
+          matchLoading = !match || (match?.gameType === "gomoku" && moves.length !== match.moveCount); emit();
           suggestionsStop?.();
-          suggestionsStop = onSnapshot(suggestionsRef(roomId, nextMatchId), suggestionSnapshot => {
-            suggestions = suggestionSnapshot.docs.map(item => ({ id: item.id, ...item.data() })); emit();
-          }, onError);
+           suggestionsStop = onSnapshot(suggestionsRef(roomId, nextMatchId), suggestionSnapshot => {
+             suggestions = suggestionSnapshot.docs.map(item => ({ id: item.id, ...item.data() })); emit();
+           }, onError);
+           movesStop?.(); movesStop=null;
+           if (match?.gameType === "gomoku") movesStop = onSnapshot(movesRef(roomId,nextMatchId), moveSnapshot => { moves=moveSnapshot.docs.map(item=>item.data()).sort((a,b)=>a.moveNumber-b.moveNumber);matchLoading=moves.length!==match.moveCount;emit(); },onError);
         }, onError);
       } else emit();
       const nextSeriesId = roomData?.currentSeriesId || null;
@@ -136,7 +144,7 @@ export function createFirebaseRoomService({ db, uid }) {
     const stopPlayers = onSnapshot(playersRef(roomId), snapshot => {
       players = snapshot.docs.map(item => item.data()).sort((a, b) => a.seat - b.seat); emit();
     }, onError);
-    return () => { stopRoom(); stopPlayers(); matchStop?.(); seriesStop?.(); suggestionsStop?.(); };
+    return () => { stopRoom(); stopPlayers(); matchStop?.(); seriesStop?.(); suggestionsStop?.(); movesStop?.(); };
   }
 
   async function preview(code) {
@@ -154,6 +162,11 @@ export function createFirebaseRoomService({ db, uid }) {
   async function nextMatch(roomId) { return nextRound(roomId); }
   async function nextSeries(roomId) { return createNextSeries(roomId, false); }
 
+  async function updateSelectedGame(roomId, gameType) {
+    if (!GAME_TYPES.includes(gameType)) throw new Error("Unknown game");
+    await runTransaction(db,async tx=>{const ref=roomRef(roomId),room=(await tx.get(ref)).data();if(room.hostId!==uid)throw new Error("Host only");if(!["lobby","seriesBreak","seriesOver"].includes(room.status))throw new Error("Game selection is locked");tx.update(ref,{selectedGameType:gameType,gameSelectionVersion:1,updatedAt:serverTimestamp()});});
+  }
+
   async function createNextSeries(roomId, initial) {
     const seriesId = crypto.randomUUID();
     const matchId = crypto.randomUUID();
@@ -170,9 +183,10 @@ export function createFirebaseRoomService({ db, uid }) {
       const seriesNumber = initial ? 0 : (room.seriesNumber || 0) + 1;
       const [playerX, playerO] = pairForRound(players, seriesNumber);
       const targetWins = room.settings.seriesTargetWins || 2;
-      tx.set(seriesRef(roomId, seriesId), { ...createSeries(playerX, playerO, targetWins, seriesNumber), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-      tx.set(matchRef(roomId, matchId), matchData(playerX, playerO, roundNumber, seriesId, 1));
-      tx.update(ref, { status: "playing", currentMatchId: matchId, currentSeriesId: seriesId, roundNumber, seriesNumber, updatedAt: serverTimestamp() });
+      const gameType=normalizeGameType(room.selectedGameType);
+      tx.set(seriesRef(roomId, seriesId), { ...createSeries(playerX, playerO, targetWins, seriesNumber), gameType, scoreApplied:false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+      tx.set(matchRef(roomId, matchId), matchData(playerX, playerO, roundNumber, seriesId, 1,gameType));
+      tx.update(ref, { status: "playing", activeGameType:gameType, currentMatchId: matchId, currentSeriesId: seriesId, roundNumber, seriesNumber, updatedAt: serverTimestamp() });
       for (const snapshot of playerSnapshots) if (snapshot.exists() && snapshot.data().joinedDuringSeries && (snapshot.data().role || "player") === "player") tx.update(snapshot.ref, { joinedDuringSeries: false, requestedRole: null, roleUpdatedAt: serverTimestamp() });
     });
     return matchId;
@@ -187,8 +201,8 @@ export function createFirebaseRoomService({ db, uid }) {
       if (room.status !== "roundOver") throw new Error("Round is not over");
       if (!room.currentSeriesId) {
         const previous = (await tx.get(matchRef(roomId, room.currentMatchId))).data(); const targetWins = room.settings.seriesTargetWins || 2;
-        tx.set(seriesRef(roomId, legacySeriesId), { ...createSeries(previous.playerX, previous.playerO, targetWins, 0), createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
-        tx.set(matchRef(roomId, matchId), matchData(previous.playerX, previous.playerO, room.roundNumber + 1, legacySeriesId, 1));
+        tx.set(seriesRef(roomId, legacySeriesId), { ...createSeries(previous.playerX, previous.playerO, targetWins, 0), gameType:normalizeGameType(previous.gameType), scoreApplied:false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+        tx.set(matchRef(roomId, matchId), matchData(previous.playerX, previous.playerO, room.roundNumber + 1, legacySeriesId, 1,normalizeGameType(previous.gameType)));
         tx.update(ref, { status: "playing", currentMatchId: matchId, currentSeriesId: legacySeriesId, roundNumber: room.roundNumber + 1, seriesNumber: 0, updatedAt: serverTimestamp() });
         return;
       }
@@ -197,7 +211,7 @@ export function createFirebaseRoomService({ db, uid }) {
       const seriesRoundNumber = series.roundsPlayed + 1;
       const swap = seriesRoundNumber % 2 === 0;
       const playerX = swap ? series.playerB : series.playerA; const playerO = swap ? series.playerA : series.playerB;
-      tx.set(matchRef(roomId, matchId), matchData(playerX, playerO, room.roundNumber + 1, room.currentSeriesId, seriesRoundNumber));
+      tx.set(matchRef(roomId, matchId), matchData(playerX, playerO, room.roundNumber + 1, room.currentSeriesId, seriesRoundNumber,normalizeGameType(series.gameType)));
       tx.update(ref, { status: "playing", currentMatchId: matchId, roundNumber: room.roundNumber + 1, updatedAt: serverTimestamp() });
     });
     return matchId;
@@ -281,10 +295,38 @@ export function createFirebaseRoomService({ db, uid }) {
       if (current.seriesId && seriesSnapshot) {
         const winnerId = current.winner === "X" ? current.playerX : current.winner === "O" ? current.playerO : null;
         const settledSeries = settleSeriesRound(seriesSnapshot.data(), winnerId);
-        tx.update(seriesRef(roomId, current.seriesId), { winsByPlayer: settledSeries.winsByPlayer, roundsPlayed: settledSeries.roundsPlayed, status: settledSeries.status, winnerId: settledSeries.winnerId, updatedAt: serverTimestamp() });
+        tx.update(seriesRef(roomId, current.seriesId), { winsByPlayer: settledSeries.winsByPlayer, roundsPlayed: settledSeries.roundsPlayed, status: settledSeries.status, winnerId: settledSeries.winnerId, scoreApplied:settledSeries.status!=="playing", updatedAt: serverTimestamp() });
         tx.update(roomRef(roomId), { status: settledSeries.status === "playing" ? "roundOver" : "seriesBreak", updatedAt: serverTimestamp() });
       } else tx.update(roomRef(roomId), { status: "roundOver", updatedAt: serverTimestamp() });
     });
+  }
+
+  async function moveGomoku(roomId,matchId,row,column) {
+    let terminal=false;
+    await runTransaction(db,async tx=>{
+      const room=(await tx.get(roomRef(roomId))).data();
+      if(room.status!=="playing"||room.currentMatchId!==matchId||normalizeGameType(room.activeGameType)!=="gomoku")throw new Error("No active Gomoku match");
+      const ref=matchRef(roomId,matchId),current=(await tx.get(ref)).data();
+      const stone=current.currentTurn,expected=stone===BLACK?current.playerBlack:current.playerWhite;
+      if(expected!==uid)throw new Error("Not your turn");
+      if(!Number.isInteger(row)||!Number.isInteger(column)||row<0||row>14||column<0||column>14)throw new Error("Invalid intersection");
+      const moveNumber=current.moveCount+1,moveDocument=moveRef(roomId,matchId,moveNumber),moveId=`move-${moveNumber}`,cellKey=row*15+column;
+      const specs=[{type:"row",lineIndex:row,cellIndex:column},{type:"column",lineIndex:column,cellIndex:row},{type:"down",lineIndex:row-column+14,cellIndex:row},{type:"up",lineIndex:row+column,cellIndex:row}];
+      const projectionDocuments=specs.map(spec=>projectionRef(roomId,matchId,spec.type,spec.lineIndex));
+      const reads=await Promise.all([tx.get(moveDocument),...projectionDocuments.map(item=>tx.get(item))]);
+      if(reads[0].exists())throw new Error("Move already exists");
+      const projections=specs.map((spec,index)=>{const cells=reads[index+1].exists()?[...reads[index+1].data().cells]:Array(15).fill(null);if(cells[spec.cellIndex]!==null)throw new Error("Intersection is occupied");cells[spec.cellIndex]=stone;return{...spec,cells};});
+      const winningProjection=projections.map(item=>({...item,start:winningWindow(item.cells,item.cellIndex,stone)})).find(item=>item.start!==null),result=winningProjection?"won":moveNumber===225?"draw":"playing";
+      terminal=result!=="playing";const winningProofCells=winningProjection?projectionCells(winningProjection):[];
+      tx.set(moveDocument,{moveNumber,moveId,cellKey,playerId:uid,stone,row,column,createdAt:serverTimestamp()});
+      projections.forEach((projection,index)=>tx.set(projectionDocuments[index],{lineType:projection.type,lineIndex:projection.lineIndex,cells:projection.cells,updatedAt:serverTimestamp()}));
+      tx.update(ref,{currentTurn:result==="playing"?(stone===BLACK?WHITE:BLACK):stone,status:result,winner:result==="won"?stone:null,winningProofCells,winDirection:winningProjection?.type||null,winStart:winningProjection?.start??null,moveCount:moveNumber,lastMoveId:moveId,lastPlayerId:uid,lastMoveRow:row,lastMoveColumn:column,approvedSpectatorId:null,approvedSuggestionMoveCount:-1,assistSpectatorId:null,assistAvatarId:null,updatedAt:serverTimestamp()});
+    });
+    if(terminal)await settleGomokuMatch(roomId,matchId);
+  }
+
+  async function settleGomokuMatch(roomId,matchId){
+    await runTransaction(db,async tx=>{const roomRefValue=roomRef(roomId),room=(await tx.get(roomRefValue)).data();if(room.status!=="playing"||room.currentMatchId!==matchId)return;const ref=matchRef(roomId,matchId),current=(await tx.get(ref)).data();if(!current||current.status==="playing"||current.scoreApplied)return;const blackRef=playerRef(roomId,current.playerBlack),whiteRef=playerRef(roomId,current.playerWhite);const [blackSnapshot,whiteSnapshot,seriesSnapshot]=await Promise.all([tx.get(blackRef),tx.get(whiteRef),tx.get(seriesRef(roomId,current.seriesId))]);tx.update(ref,{scoreApplied:true,updatedAt:serverTimestamp()});const blackPoints=current.status==="draw"?1:current.winner===BLACK?3:0,whitePoints=current.status==="draw"?1:current.winner===WHITE?3:0;if(blackPoints)tx.update(blackRef,{partyScore:blackSnapshot.data().partyScore+blackPoints});if(whitePoints)tx.update(whiteRef,{partyScore:whiteSnapshot.data().partyScore+whitePoints});const winnerId=current.winner===BLACK?current.playerBlack:current.winner===WHITE?current.playerWhite:null;const settled=settleSeriesRound(seriesSnapshot.data(),winnerId);tx.update(seriesRef(roomId,current.seriesId),{winsByPlayer:settled.winsByPlayer,roundsPlayed:settled.roundsPlayed,status:settled.status,winnerId:settled.winnerId,scoreApplied:settled.status!=="playing",updatedAt:serverTimestamp()});tx.update(roomRefValue,{status:settled.status==="playing"?"roundOver":"seriesBreak",updatedAt:serverTimestamp()});});
   }
 
   async function raiseHand(roomId, matchId) {
@@ -303,7 +345,7 @@ export function createFirebaseRoomService({ db, uid }) {
     if (!["approved", "dismissed"].includes(decision)) throw new Error("Invalid hand decision");
     await runTransaction(db, async tx => {
       const matchDocument = matchRef(roomId, matchId); const match = (await tx.get(matchDocument)).data();
-      const expected = match.currentTurn === "X" ? match.playerX : match.playerO;
+       const expected = match.gameType === "gomoku" ? (match.currentTurn === BLACK ? match.playerBlack : match.playerWhite) : (match.currentTurn === "X" ? match.playerX : match.playerO);
       if (expected !== uid || match.status !== "playing") throw new Error("Current player only");
       const ref = suggestionRef(roomId, matchId, spectatorId); const suggestion = (await tx.get(ref)).data();
       if (!suggestion || suggestion.status !== "raised" || suggestion.moveCount !== match.moveCount) throw new Error("Hand request expired");
@@ -324,10 +366,14 @@ export function createFirebaseRoomService({ db, uid }) {
     });
   }
 
+  async function suggestGomoku(roomId,matchId,row,column){
+    await runTransaction(db,async tx=>{const room=(await tx.get(roomRef(roomId))).data(),match=(await tx.get(matchRef(roomId,matchId))).data(),ref=suggestionRef(roomId,matchId,uid),suggestion=(await tx.get(ref)).data();if(!room||room.status!=="playing"||room.currentMatchId!==matchId||match.gameType!=="gomoku"||match.status!=="playing")throw new Error("No active Gomoku match");if(!suggestion||suggestion.status!=="approved"||suggestion.moveCount!==match.moveCount||match.approvedSpectatorId!==uid)throw new Error("Wait for approval");if(!Number.isInteger(row)||!Number.isInteger(column)||row<0||row>14||column<0||column>14)throw new Error("Choose an empty intersection");const rowProjection=(await tx.get(projectionRef(roomId,matchId,"row",row))).data();if(rowProjection?.cells?.[column])throw new Error("Choose an empty intersection");tx.update(ref,{status:"suggested",suggestedCell:null,suggestedRow:row,suggestedColumn:column,suggestedAt:serverTimestamp()});});
+  }
+
   async function muteSuggestions(roomId, matchId) {
     await runTransaction(db, async tx => {
       const ref = matchRef(roomId, matchId); const match = (await tx.get(ref)).data();
-      const expected = match.currentTurn === "X" ? match.playerX : match.playerO;
+       const expected = match.gameType === "gomoku" ? (match.currentTurn === BLACK ? match.playerBlack : match.playerWhite) : (match.currentTurn === "X" ? match.playerX : match.playerO);
       if (expected !== uid || match.status !== "playing") throw new Error("Current player only");
       tx.update(ref, { suggestionsMutedMoveCount: match.moveCount, updatedAt: serverTimestamp() });
     });
@@ -342,12 +388,18 @@ export function createFirebaseRoomService({ db, uid }) {
     });
   }
 
-  return Object.freeze({ uid, create, join, preview, resume, probe, watch, start, move, nextMatch, nextSeries, updateSeriesSetting, setRole, requestRole, raiseHand, reviewHand, suggestCell, muteSuggestions, endParty });
+  return Object.freeze({ uid, create, join, preview, resume, probe, watch, start, move, moveGomoku, nextMatch, nextSeries, updateSelectedGame, updateSeriesSetting, setRole, requestRole, raiseHand, reviewHand, suggestCell, suggestGomoku, muteSuggestions, endParty });
 }
 
-function matchData(playerX, playerO, roundNumber, seriesId, seriesRoundNumber) {
+function matchData(playerX, playerO, roundNumber, seriesId, seriesRoundNumber,gameType=DEFAULT_GAME_TYPE) {
+  if(gameType==="gomoku")return {gameType,playerBlack:playerX,playerWhite:playerO,currentTurn:BLACK,status:"playing",winner:null,winningProofCells:[],winDirection:null,winStart:null,moveCount:0,scoreApplied:false,roundNumber,seriesId,seriesRoundNumber,lastMoveId:null,lastPlayerId:null,lastMoveRow:null,lastMoveColumn:null,suggestionsMutedMoveCount:-1,approvedSpectatorId:null,approvedSuggestionMoveCount:-1,assistSpectatorId:null,assistAvatarId:null,createdAt:serverTimestamp(),updatedAt:serverTimestamp()};
   const game = createGame();
   return { gameType: "tic-tac-toe", playerX, playerO, board: game.board, currentTurn: game.currentTurn, status: game.status, winner: game.winner, winningLine: [], moveCount: game.moveCount, scoreApplied: false, roundNumber, seriesId, seriesRoundNumber, suggestionsMutedMoveCount: -1, approvedSpectatorId: null, approvedSuggestionMoveCount: -1, assistSpectatorId: null, assistAvatarId: null, createdAt: serverTimestamp(), updatedAt: serverTimestamp() };
+}
+
+function winningWindow(cells,index,stone){for(let start=Math.max(0,index-4);start<=Math.min(10,index);start+=1)if(cells.slice(start,start+5).every(cell=>cell===stone))return start;return null;}
+function projectionCells({type,lineIndex,start}){
+  return Array.from({length:5},(_,offset)=>{const position=start+offset;if(type==="row")return lineIndex*15+position;if(type==="column")return position*15+lineIndex;if(type==="down")return position*15+(position-lineIndex+14);return position*15+(lineIndex-position);});
 }
 
 function playerData(uid, avatar, seat, role, joinedDuringSeries = false) {
