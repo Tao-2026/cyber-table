@@ -52,6 +52,12 @@ All notable changes to Cyber Table are documented here. The format follows
 
 ### Fixed
 
+- Fixed high-difficulty Gomoku practice AI ignoring a player's open three.
+- Added symmetric recognition of open threes, broken threes, rush fours, open fours, and double threats across rows, columns, and both diagonals.
+- Levels 9–10 now use budgeted multi-ply attack-and-defense search over nearby candidates.
+- Level 10 no longer randomly deviates from a fatal or uniquely required defensive point.
+- Search remains bounded by node and time budgets and is intentionally not described as professional-grade or unbeatable.
+- Stale Gomoku AI results are discarded after difficulty, first-player mode, selected game, practice round, or page state changes.
 - Make spectator hand raises visible to the current player in real time, with an ordered queue and explicit allow-or-dismiss controls.
 - Let only an approved spectator select one legal suggestion square through a dedicated suggestion action, separate from formal board moves.
 - Split hand raising, current-player approval, one-cell suggestion, and the current player's formal move into distinct Firestore-backed states; suggestions never place a mark automatically.

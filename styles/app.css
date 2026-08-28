@@ -94,6 +94,7 @@ summary { min-height: 44px; display: flex; align-items: center; color: var(--cyb
 .game-card:disabled { opacity: 1; cursor: default; }
 .gomoku-rules { display: grid; gap: 3px; padding: 9px 12px; border: 2px solid var(--cyber-cyan); border-radius: 14px; text-align: center; }
 .gomoku-rules span { color: var(--cyber-yellow); font-weight: 900; font-size: .78rem; }
+.ai-strength-note { margin: 0; padding: 8px 12px; border: 1px dashed var(--cyber-border); border-radius: 12px; color: var(--cyber-mint); text-align: center; font-size: .78rem; font-weight: 900; letter-spacing: .04em; }
 .gomoku-tools { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; }
 .gomoku-tools button { min-height: 42px; border: 1px solid var(--cyber-border); border-radius: 10px; color: var(--cyber-text); background: var(--cyber-panel-strong); font-weight: 900; }
 .gomoku-viewport { width: 100%; aspect-ratio: 1; overflow: auto; overscroll-behavior: contain; border: 2px solid var(--cyber-border); border-radius: 18px; background: #081733; box-shadow: var(--cyber-shadow); touch-action: pan-x pan-y; }
